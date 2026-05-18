@@ -380,9 +380,9 @@ def run(interactive_login: bool | None = None) -> dict:
                     print("✅ Saved Successfully")
                     mark_as_seen(seen_listings, fb_id)
                     stats["saved"] += 1
-                    stats["vehicles"].append(
-                        {"fb_id": data["fb_id"], "title": data["title"], "price": data["price"]}
-                    )
+                    body = res.json()
+                    saved = body.get("vehicle") or {}
+                    stats["vehicles"].append(saved)
                 else:
                     print(f"❌ API Error {res.status_code}: {res.text}")
                     print(data)
