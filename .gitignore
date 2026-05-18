@@ -1,3 +1,20 @@
+# Python binaries and cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Environment configuration
 .env
+
+# Automation & Session Profiles (Saves passwords/cookies locally)
+stealth_profile/
+chrome_profile/
+fb_auth_state.json
+
+# Scraping junk files
+downloaded_files/
+
+# Virtual environment
+venv/
+.venv/
