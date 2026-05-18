@@ -7,14 +7,11 @@ from clawbot.vision import build_vision_context
 
 from clawbot.agents.vehicle_detector import detect_vehicle
 from clawbot.agents.scam_detector import detect_scam
-from clawbot.agents.colour_detector import detect_colour
 from clawbot.agents.damage_detector import detect_damage
 from clawbot.agents.mot_checker import check_mot
 from clawbot.agents.plate_reader import read_plate
-from clawbot.agents.ownership_checker import detect_owners
 from clawbot.agents.service_checker import detect_service_history
 from clawbot.agents.ulez_checker import check_ulez
-from clawbot.agents.condition_scorer import score_condition
 
 
 def fetch_jobs():
@@ -48,13 +45,10 @@ def process_vehicle(vehicle):
     updates = {}
 
     # Vision agents
-    updates.update(
-        detect_vehicle(vision)
-    )
-
-    updates.update(
-        detect_colour(vision)
-    )
+    detect_vehicle(
+    vehicle,
+    vision
+)
 
     updates.update(
         detect_damage(vision)
@@ -71,11 +65,6 @@ def process_vehicle(vehicle):
         )
     )
 
-    updates.update(
-        detect_owners(
-            vehicle.get("description") or ""
-        )
-    )
 
     updates.update(
         detect_service_history(
@@ -95,9 +84,6 @@ def process_vehicle(vehicle):
         check_ulez(vehicle)
     )
 
-    updates.update(
-        score_condition(vehicle)
-    )
 
     updates["ai_last_updated"] = (
         datetime.now(UTC).isoformat()
