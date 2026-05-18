@@ -7,10 +7,7 @@ from clawbot.vision import build_vision_context
 from clawbot.agents.vehicle_detector import detect_vehicle
 from clawbot.agents.scam_detector import detect_scam
 from clawbot.agents.damage_detector import detect_damage
-from clawbot.agents.mot_checker import check_mot
 from clawbot.agents.plate_reader import read_plate
-from clawbot.agents.service_checker import detect_service_history
-from clawbot.agents.ulez_checker import check_ulez
 
 
 def fetch_jobs():
@@ -42,11 +39,7 @@ def process_vehicle(vehicle):
 
     # Text agents
     updates.update(detect_scam(vehicle))
-    updates.update(detect_service_history(vehicle.get("description") or ""))
 
-    # Hybrid agents
-    updates.update(check_mot(vision, vehicle.get("description") or ""))
-    updates.update(check_ulez(vehicle))
 
     updates["ai_last_updated"] = datetime.now(UTC).isoformat()
 
