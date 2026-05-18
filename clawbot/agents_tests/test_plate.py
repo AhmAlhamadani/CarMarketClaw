@@ -1,6 +1,6 @@
 from clawbot.agents.plate_reader import read_plate
+from clawbot.vision import build_vision_context 
 from api.db.supabase_client import supabase
-
 
 print("Fetching vehicle...")
 
@@ -19,11 +19,12 @@ vehicle = row.data[0]
 print("Title:", vehicle["title"])
 print("Images:", len(vehicle["image_urls"]))
 
-print("Running OCR...")
+print("Building vision context and running OCR...")
 
-result = read_plate(
-    vehicle["image_urls"]
-)
+# FIX: Build the vision context dictionary before passing it to the agent
+vision = build_vision_context(vehicle["image_urls"]) 
+
+result = read_plate(vision)
 
 print("Result:")
 print(result)
