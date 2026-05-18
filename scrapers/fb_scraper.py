@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import re
 import requests
@@ -314,9 +315,24 @@ def scrape_detail_page(sb, url, fb_id):
 # MAIN PROCESSING LOOP
 # ----------------------------
 
-def run():
+def run(interactive_login: bool | None = None) -> dict:
+    """Run a full Marketplace scan. Blocks until every listing on the page is processed."""
+    if interactive_login is None:
+        interactive_login = sys.stdin.isatty()
+
+    stats = {
+        "status": "completed",
+        "found": 0,
+        "saved": 0,
+        "skipped_seen": 0,
+        "skipped_invalid": 0,
+        "api_errors": 0,
+        "errors": 0,
+        "vehicles": [],
+    }
+
     print(f"Loading profile: {PROFILE_DIR}")
-    
+
     seen_listings = load_seen_listings()
     print(f"📂 Loaded {len(seen_listings)} previously scraped listings.")
 
@@ -325,18 +341,24 @@ def run():
         human_sleep(3.0, 6.0)
 
         if "login" in sb.get_current_url():
-            input("👉 Log in then press ENTER...")
-            time.sleep(5)
+            if interactive_login:
+                input("👉 Log in then press ENTER...")
+                time.sleep(5)
+            else:
+                stats["status"] = "login_required"
+                return stats
 
         scroll_to_load_listings(sb)
         urls = get_organic_urls(sb)
+        stats["found"] = len(urls)
         print(f"📦 Found {len(urls)} listings on page.")
 
         for url in urls:
             fb_id = extract_id_from_url(url)
-            
+
             if not fb_id or fb_id in seen_listings:
                 print(f"⏭️ Skipping already seen or invalid ID: {fb_id}")
+                stats["skipped_seen"] += 1
                 continue
 
             try:
@@ -344,24 +366,35 @@ def run():
 
                 if not is_valid_vehicle(data):
                     print(f"❌ Skipping junk: {data['title']}")
-                    mark_as_seen(seen_listings, fb_id) 
+                    mark_as_seen(seen_listings, fb_id)
+                    stats["skipped_invalid"] += 1
                     continue
 
-                print(f"📤 Sending: {data['fb_id']} | {data['title']} | Mileage: {data['mileage']} km | Condition: {data['vehicle_condition']}")
+                print(
+                    f"📤 Sending: {data['fb_id']} | {data['title']} | "
+                    f"Mileage: {data['mileage']} km | Condition: {data['vehicle_condition']}"
+                )
                 res = requests.post(API_ENDPOINT, json=data, timeout=10)
 
                 if res.status_code in [200, 201]:
                     print("✅ Saved Successfully")
-                    # Saves ID and exact timestamp
                     mark_as_seen(seen_listings, fb_id)
+                    stats["saved"] += 1
+                    stats["vehicles"].append(
+                        {"fb_id": data["fb_id"], "title": data["title"], "price": data["price"]}
+                    )
                 else:
                     print(f"❌ API Error {res.status_code}: {res.text}")
                     print(data)
+                    stats["api_errors"] += 1
 
             except Exception as e:
                 print(f"⚠️ Error processing page {url}: {e}")
+                stats["errors"] += 1
 
             human_sleep(2.0, 4.5)
+
+    return stats
 
 
 if __name__ == "__main__":

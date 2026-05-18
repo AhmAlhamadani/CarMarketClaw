@@ -1,5 +1,7 @@
 from fastapi import FastAPI
-from routes.fb_vehicles import router as vehicles_router
+from api.routes.fb_vehicles import router as vehicles_router
+from api.routes.scraper import router as scraper_router
+from api.routes.agents import router as agents_router
 
 app = FastAPI()
 
@@ -11,4 +13,8 @@ def health():
 def test_db():
     return {"message": "Supabase connected successfully"}
 
+
 app.include_router(vehicles_router, prefix="/fb_vehicles")
+
+app.include_router(scraper_router, prefix="/scrape")
+app.include_router(agents_router, prefix="/agents")
