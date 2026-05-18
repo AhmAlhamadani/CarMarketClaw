@@ -3,6 +3,8 @@ from datetime import datetime, UTC
 
 from api.db.supabase_client import supabase
 
+from clawbot.vision import build_vision_context
+
 from clawbot.agents.vehicle_detector import detect_vehicle
 from clawbot.agents.scam_detector import detect_scam
 from clawbot.agents.colour_detector import detect_colour
@@ -13,6 +15,7 @@ from clawbot.agents.ownership_checker import detect_owners
 from clawbot.agents.service_checker import detect_service_history
 from clawbot.agents.ulez_checker import check_ulez
 from clawbot.agents.condition_scorer import score_condition
+
 
 def fetch_jobs():
 
@@ -30,42 +33,41 @@ def fetch_jobs():
 
 def process_vehicle(vehicle):
 
-    print(f"Processing: {vehicle['title']}")
+    print(f"\nProcessing: {vehicle['title']}")
+
+    print("Building vision context...")
+
+    vision = build_vision_context(
+        vehicle["image_urls"]
+    )
+
+    print(
+        f"{len(vision['images'])} images loaded"
+    )
 
     updates = {}
 
+    # Vision agents
     updates.update(
-        detect_vehicle(vehicle["image_urls"])
+        detect_vehicle(vision)
     )
 
+    updates.update(
+        detect_colour(vision)
+    )
+
+    updates.update(
+        detect_damage(vision)
+    )
+
+    updates.update(
+        read_plate(vision)
+    )
+
+    # Text agents
     updates.update(
         detect_scam(
             vehicle.get("description") or ""
-        )
-    )
-
-    updates.update(
-        detect_colour(
-            vehicle["image_urls"]
-        )
-    )
-
-    updates.update(
-        detect_damage(
-            vehicle["image_urls"]
-        )
-    )
-
-    updates.update(
-        check_mot(
-            vehicle["image_urls"],
-            vehicle.get("description") or ""
-        )
-    )
-
-    updates.update(
-        read_plate(
-            vehicle["image_urls"]
         )
     )
 
@@ -77,6 +79,14 @@ def process_vehicle(vehicle):
 
     updates.update(
         detect_service_history(
+            vehicle.get("description") or ""
+        )
+    )
+
+    # Hybrid agents
+    updates.update(
+        check_mot(
+            vision,
             vehicle.get("description") or ""
         )
     )
@@ -111,13 +121,18 @@ def run():
         jobs = fetch_jobs()
 
         if not jobs:
+
             print("No jobs.")
+
             time.sleep(10)
+
             continue
 
         for job in jobs:
+
             process_vehicle(job)
 
 
 if __name__ == "__main__":
+
     run()
