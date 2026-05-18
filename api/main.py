@@ -5,7 +5,7 @@ from api.routes.agents import router as agents_router
 
 app = FastAPI()
 
-@app.get("/health")
+@app.get("/")
 def health():
     return {"status": "ok"}
 
