@@ -1,5 +1,60 @@
 import re
 import time
+from typing import Callable
+
+# prompt_fn(step, title, prompt, options, allow_blank, suggested) -> str | None
+PromptFn = Callable[..., str | None]
+
+
+def _read_choice(
+    prompt_fn: PromptFn | None,
+    *,
+    step: str,
+    title: str,
+    prompt: str,
+    options: list[str],
+    allow_blank: bool = True,
+    suggested: str | None = None,
+) -> str | None:
+    if prompt_fn is not None:
+        choice = prompt_fn(
+            step=step,
+            title=title,
+            prompt=prompt,
+            options=options,
+            allow_blank=allow_blank,
+            suggested=suggested,
+        )
+        if choice is None and allow_blank:
+            return None
+        if choice and choice in options:
+            return choice
+        if choice:
+            raise ValueError(f"Selection not recognized for {step}: {choice!r}")
+        return None
+
+    print("\n" + "=" * 60)
+    print(title.upper())
+    print("=" * 60)
+    for i, opt in enumerate(options, 1):
+        print(f"{opt:<25}", end="\n" if i % 3 == 0 else "")
+    print("\n" + "-" * 60)
+    if suggested:
+        print(f"(Suggested from listing: {suggested})")
+
+    while True:
+        user_choice = input(
+            f"\n{prompt} (Press Enter to leave blank/Any): "
+        ).strip()
+        if not user_choice:
+            if allow_blank:
+                print("--> Bypassing selection.")
+                return None
+            continue
+        if user_choice in options:
+            return user_choice
+        print("Selection not recognized. Match the text exactly.")
+
 
 def reject_cookies(sb):
     try:
@@ -13,6 +68,7 @@ def reject_cookies(sb):
     finally:
         sb.switch_to_default_content()
 
+
 def open_filters(sb):
     try:
         filter_button = 'button[data-testid="search-filter-toggle"]'
@@ -21,8 +77,8 @@ def open_filters(sb):
     except Exception as e:
         print(f"Could not open filters: {e}")
 
+
 def click_accordion(sb, testid_name):
-    """Generic function to open any sidebar accordion tab based on its data-testid"""
     try:
         button_selector = f'button[data-testid="{testid_name}"]'
         sb.wait_for_element_visible(button_selector, timeout=10)
@@ -30,181 +86,228 @@ def click_accordion(sb, testid_name):
     except Exception as e:
         print(f"Failed to click accordion {testid_name}: {e}")
 
+
 def build_dropdown_map(sb, selector, timeout=10):
-    """Scrapes a <select> element and builds a clean-to-raw dictionary mapping."""
     try:
         sb.wait_for_element_visible(selector, timeout=timeout)
         raw_options = sb.get_select_options(selector)
-        
+
         mapping = {}
         for opt in raw_options:
             if opt != "Any":
-                clean_name = re.sub(r'\s*\([\d,]+\)', '', opt).strip()
+                clean_name = re.sub(r"\s*\([\d,]+\)", "", opt).strip()
                 mapping[clean_name] = opt
         return mapping
     except Exception:
         return {}
 
-def ask_for_single_choice(sb, dropdown_selector, step_title, prompt_text):
-    """Handles standard single-choice <select> dropdowns conversationally."""
+
+def ask_for_single_choice(
+    sb,
+    dropdown_selector,
+    step_title,
+    prompt_text,
+    *,
+    step_id: str,
+    prompt_fn: PromptFn | None = None,
+    suggested: str | None = None,
+):
     options_map = build_dropdown_map(sb, dropdown_selector, timeout=5)
-    
+
     if not options_map:
         print(f"\n--> No options available for {step_title}. Skipping this step.")
         return True, None
 
-    print("\n" + "=" * 60)
-    print(f"{step_title.upper()}")
-    print("=" * 60)
-    for i, opt in enumerate(options_map.keys(), 1):
-        print(f"{opt:<25}", end="\n" if i % 3 == 0 else "")
-    print("\n" + "-" * 60)
-    
-    while True:
-        user_choice = input(f"\n{prompt_text} (Press Enter to leave blank/Any): ").strip()
-        if not user_choice:
-            print(f"--> Bypassing selection.")
-            return True, None
-        if user_choice in options_map:
-            sb.select_option_by_text(dropdown_selector, options_map[user_choice])
-            return True, user_choice
-        print("Selection not recognized. Match the text exactly.")
+    options = list(options_map.keys())
+    user_choice = _read_choice(
+        prompt_fn,
+        step=step_id,
+        title=step_title,
+        prompt=prompt_text,
+        options=options,
+        allow_blank=True,
+        suggested=suggested,
+    )
+    if not user_choice:
+        return True, None
 
-def ask_for_gearbox(sb):
-    """Checks for Gearbox checkboxes (Not Dropdowns) and asks the user to choose one."""
-    print("\n" + "=" * 60)
-    print("STEP 4: CHOOSE A GEARBOX")
-    print("=" * 60)
-    
-    # We build a manual map connecting your choice to the specific HTML label targets
+    sb.select_option_by_text(dropdown_selector, options_map[user_choice])
+    return True, user_choice
+
+
+def ask_for_gearbox(sb, *, prompt_fn: PromptFn | None = None, suggested: str | None = None):
     options_map = {}
     auto_label = 'label[for="transmission-automatic-checkbox"]'
     manual_label = 'label[for="transmission-manual-checkbox"]'
-    
-    # AutoTrader hides options with 0 cars, so we check if they are actually on the page
+
     if sb.is_element_present(auto_label):
         options_map["Automatic"] = auto_label
     if sb.is_element_present(manual_label):
         options_map["Manual"] = manual_label
-        
+
     if not options_map:
         print("\n--> No gearbox options available for this car. Skipping.")
         return True, None
 
-    for i, opt in enumerate(options_map.keys(), 1):
-        print(f"{opt:<25}", end="\n" if i % 3 == 0 else "")
-    print("\n" + "-" * 60)
-    
-    while True:
-        user_choice = input("\nWhat Gearbox do you want? (Press Enter for Any): ").strip()
-        
-        # Capitalize the first letter so if you type "automatic", it still matches "Automatic"
-        user_choice = user_choice.capitalize() if user_choice else ""
-        
-        if not user_choice:
-            print("--> Bypassing gearbox selection.")
-            return True, None
-            
-        if user_choice in options_map:
-            # We use js_click() on the label to reliably check the styled box
-            sb.js_click(options_map[user_choice])
-            return True, user_choice
-            
-        print("Selection not recognized. Type 'Automatic', 'Manual', or press Enter.")
+    options = list(options_map.keys())
+    user_choice = _read_choice(
+        prompt_fn,
+        step="gearbox",
+        title="STEP 4: CHOOSE A GEARBOX",
+        prompt="What Gearbox do you want?",
+        options=options,
+        allow_blank=True,
+        suggested=suggested,
+    )
+    if not user_choice:
+        print("--> Bypassing gearbox selection.")
+        return True, None
 
-def ask_for_range(sb, min_selector, max_selector, step_title):
-    """Handles 'From' and 'To' dropdowns like Year, Price, and Mileage."""
-    print("\n" + "=" * 60)
-    print(f"{step_title.upper()}")
-    print("=" * 60)
-    
+    sb.js_click(options_map[user_choice])
+    return True, user_choice
+
+
+def ask_for_range(
+    sb,
+    min_selector,
+    max_selector,
+    step_title,
+    *,
+    step_id: str,
+    prompt_fn: PromptFn | None = None,
+    suggested_min: str | None = None,
+    suggested_max: str | None = None,
+):
     final_min = None
     final_max = None
-    
+
     min_map = build_dropdown_map(sb, min_selector, timeout=5)
     if min_map:
-        print(f"\n--- SELECT MINIMUM (FROM) ---")
-        for i, opt in enumerate(min_map.keys(), 1):
-            print(f"{opt:<20}", end="\n" if i % 4 == 0 else "")
-        print("\n" + "-" * 60)
-        
-        while True:
-            min_choice = input("Select 'From' value (Press Enter for Any): ").strip()
-            if not min_choice:
-                break
-            if min_choice in min_map:
-                sb.select_option_by_text(min_selector, min_map[min_choice])
-                final_min = min_choice
-                sb.wait(1.5) 
-                break
-            print("Selection not recognized. Match the text exactly.")
+        min_options = list(min_map.keys())
+        min_choice = _read_choice(
+            prompt_fn,
+            step=f"{step_id}_min",
+            title=f"{step_title} — minimum",
+            prompt="Select 'From' value",
+            options=min_options,
+            allow_blank=True,
+            suggested=suggested_min,
+        )
+        if min_choice:
+            sb.select_option_by_text(min_selector, min_map[min_choice])
+            final_min = min_choice
+            sb.wait(1.5)
 
     max_map = build_dropdown_map(sb, max_selector, timeout=5)
     if max_map:
-        print(f"\n--- SELECT MAXIMUM (TO) ---")
-        for i, opt in enumerate(max_map.keys(), 1):
-            print(f"{opt:<20}", end="\n" if i % 4 == 0 else "")
-        print("\n" + "-" * 60)
-        
-        while True:
-            max_choice = input("Select 'To' value (Press Enter for Any): ").strip()
-            if not max_choice:
-                break
-            if max_choice in max_map:
-                sb.select_option_by_text(max_selector, max_map[max_choice])
-                final_max = max_choice
-                break
-            print("Selection not recognized. Match the text exactly.")
+        max_options = list(max_map.keys())
+        max_choice = _read_choice(
+            prompt_fn,
+            step=f"{step_id}_max",
+            title=f"{step_title} — maximum",
+            prompt="Select 'To' value",
+            options=max_options,
+            allow_blank=True,
+            suggested=suggested_max,
+        )
+        if max_choice:
+            sb.select_option_by_text(max_selector, max_map[max_choice])
+            final_max = max_choice
 
     return True, final_min, final_max
 
-def run_interactive_scraper(sb):
-    response = {
-        "success": False,
-        "filters": {}
-    }
+
+def run_interactive_scraper(sb, prompt_fn: PromptFn | None = None, suggestions: dict | None = None):
+    suggestions = suggestions or {}
+    response = {"success": False, "filters": {}}
+
+    final_make = None
+    final_model = None
+    final_trim = None
+    final_gearbox = None
+    min_miles = max_miles = min_year = max_year = None
 
     print("Running OpenClaw Filter Selection...")
-    
+
     reject_cookies(sb)
     sb.wait(1)
     open_filters(sb)
     sb.wait(1)
 
-    # ---- STEP 1, 2, 3: MAKE, MODEL, TRIM ----
     click_accordion(sb, "make_and_model-facet-group")
     sb.wait(1)
-    
-    _, final_make = ask_for_single_choice(sb, "select#make", "STEP 1: CHOOSE A MAKE", "What Make are you looking for?")
+
+    _, final_make = ask_for_single_choice(
+        sb,
+        "select#make",
+        "STEP 1: CHOOSE A MAKE",
+        "What Make are you looking for?",
+        step_id="make",
+        prompt_fn=prompt_fn,
+        suggested=suggestions.get("make"),
+    )
     if final_make:
         sb.wait(1.5)
-        _, final_model = ask_for_single_choice(sb, "select#model", f"STEP 2: CHOOSE A MODEL FOR {final_make}", "What Model are you looking for?")
+        _, final_model = ask_for_single_choice(
+            sb,
+            "select#model",
+            f"STEP 2: CHOOSE A MODEL FOR {final_make}",
+            "What Model are you looking for?",
+            step_id="model",
+            prompt_fn=prompt_fn,
+            suggested=suggestions.get("model"),
+        )
         if final_model:
             sb.wait(1.5)
-            _, final_trim = ask_for_single_choice(sb, "select#aggregated_trim", f"STEP 3: CHOOSE A TRIM FOR {final_model}", "What Trim are you looking for?")
+            _, final_trim = ask_for_single_choice(
+                sb,
+                "select#aggregated_trim",
+                f"STEP 3: CHOOSE A TRIM FOR {final_model}",
+                "What Trim are you looking for?",
+                step_id="trim",
+                prompt_fn=prompt_fn,
+            )
 
-    # ---- STEP 4: GEARBOX ----
     sb.wait(1.5)
     click_accordion(sb, "gearbox-facet-group")
     sb.wait(1)
-    
-    _, final_gearbox = ask_for_gearbox(sb)
 
-    # ---- STEP 5: MILEAGE RANGE ----
+    _, final_gearbox = ask_for_gearbox(
+        sb,
+        prompt_fn=prompt_fn,
+        suggested=suggestions.get("gearbox"),
+    )
+
     sb.wait(1.5)
-    click_accordion(sb, "mileage-facet-group") 
+    click_accordion(sb, "mileage-facet-group")
     sb.wait(1)
-    
-    _, min_miles, max_miles = ask_for_range(sb, "select#min_mileage", "select#max_mileage", "STEP 5: SET MILEAGE RANGE")
 
-    # ---- STEP 6: YEAR RANGE ----
+    _, min_miles, max_miles = ask_for_range(
+        sb,
+        "select#min_mileage",
+        "select#max_mileage",
+        "STEP 5: SET MILEAGE RANGE",
+        step_id="mileage",
+        prompt_fn=prompt_fn,
+        suggested_min=suggestions.get("min_mileage"),
+        suggested_max=suggestions.get("max_mileage"),
+    )
+
     sb.wait(1.5)
-    click_accordion(sb, "year-facet-group") 
+    click_accordion(sb, "year-facet-group")
     sb.wait(1)
-    
-    _, min_year, max_year = ask_for_range(sb, "select#min_year_manufactured", "select#max_year_manufactured", "STEP 6: SET YEAR RANGE")
 
-    # ---- STEP 7: APPLY SEARCH ----
+    _, min_year, max_year = ask_for_range(
+        sb,
+        "select#min_year_manufactured",
+        "select#max_year_manufactured",
+        "STEP 6: SET YEAR RANGE",
+        step_id="year",
+        prompt_fn=prompt_fn,
+        suggested_min=suggestions.get("min_year"),
+        suggested_max=suggestions.get("max_year"),
+    )
+
     print("\n" + "=" * 60)
     print("STEP 7: APPLYING SEARCH FILTERS")
     print("=" * 60)
@@ -217,24 +320,23 @@ def run_interactive_scraper(sb):
     except Exception as e:
         print(f"--> Failed to click the Search button: {e}")
 
-    # ---- SUMMARY ----
-    print(f"\n✅ All selections complete!")
-    print(f"Make: {final_make} | Model: {final_model} | Trim: {final_trim if 'final_trim' in locals() and final_trim else 'Any'}")
-    print(f"Gearbox: {final_gearbox if final_gearbox else 'Any'}")
-    print(f"Mileage: {min_miles if min_miles else 'Any'} to {max_miles if max_miles else 'Any'}")
-    print(f"Year: {min_year if min_year else 'Any'} to {max_year if max_year else 'Any'}")
-    
+    print("\n✅ All selections complete!")
+    print(
+        f"Make: {final_make} | Model: {final_model} | Trim: {final_trim or 'Any'}"
+    )
+    print(f"Gearbox: {final_gearbox or 'Any'}")
+    print(f"Mileage: {min_miles or 'Any'} to {max_miles or 'Any'}")
+    print(f"Year: {min_year or 'Any'} to {max_year or 'Any'}")
+
     response["success"] = True
     response["filters"] = {
         "make": final_make,
         "model": final_model,
-        "trim": final_trim if 'final_trim' in locals() else None,
+        "trim": final_trim,
         "gearbox": final_gearbox,
         "min_mileage": min_miles,
         "max_mileage": max_miles,
         "min_year": min_year,
-        "max_year": max_year
+        "max_year": max_year,
     }
-    
-    # We no longer block with input() here; we just return the data to the orchestrator.
     return response

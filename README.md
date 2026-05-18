@@ -27,4 +27,10 @@ uvicorn api.main:app --reload
     http://127.0.0.1:8000/agents/scam/{vehicle_id}
     http://127.0.0.1:8000/agents/damage/{vehicle_id}
     http://127.0.0.1:8000/agents/plate/{vehicle_id}
+
+    AutoTrader (WebSocket — interactive filter conversation, saves top 3 matches):
+    ws://127.0.0.1:8000/autotrader/ws/{fb_vehicle_id}
     
+    AutoTrader saved matches (GET):
+    http://127.0.0.1:8000/autotrader/matches/{fb_vehicle_id}
+
