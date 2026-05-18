@@ -24,13 +24,14 @@ def open_filters(sb):
     except Exception as e:
         print(f"Could not open filters: {e}")
 
-def click_make_and_model_tab(sb):
+def click_accordion(sb, testid_name):
+    """Generic function to open any sidebar accordion tab based on its data-testid"""
     try:
-        make_model_button = 'button[data-testid="make_and_model-facet-group"]'
-        sb.wait_for_element_visible(make_model_button, timeout=10)
-        sb.js_click(make_model_button)
+        button_selector = f'button[data-testid="{testid_name}"]'
+        sb.wait_for_element_visible(button_selector, timeout=10)
+        sb.js_click(button_selector)
     except Exception as e:
-        print(f"Failed to click Make and Model button: {e}")
+        print(f"Failed to click accordion {testid_name}: {e}")
 
 def build_dropdown_map(sb, selector, timeout=10):
     """Scrapes the targeted select element and builds a clean-to-raw dictionary mapping."""
@@ -47,89 +48,87 @@ def build_dropdown_map(sb, selector, timeout=10):
     except Exception:
         return {}
 
-def ask_for_make(sb):
-    """Scrapes makes and asks the user to choose one conversationally."""
-    make_dropdown = "select#make"
-    make_map = build_dropdown_map(sb, make_dropdown)
+def ask_for_single_choice(sb, dropdown_selector, step_title, prompt_text):
+    """Handles standard single-choice dropdowns conversationally."""
+    options_map = build_dropdown_map(sb, dropdown_selector, timeout=5)
     
-    if not make_map:
-        print("\n[Error] Failed to read any makes from the webpage dropdown.")
-        return False, None
-
-    print("\n" + "=" * 60)
-    print("STEP 1: CHOOSE A MAKE")
-    print("=" * 60)
-    for i, make in enumerate(make_map.keys(), 1):
-        print(f"{make:<20}", end="\n" if i % 4 == 0 else "")
-    print("\n" + "-" * 60)
-    
-    while True:
-        user_choice = input("\nWhat Make are you looking for? (or press Enter to exit): ").strip()
-        if not user_choice:
-            return False, None
-        if user_choice in make_map:
-            sb.select_option_by_text(make_dropdown, make_map[user_choice])
-            return True, user_choice
-        print("Selection not recognized. Please match the text exactly (Case Sensitive).")
-
-def ask_for_model(sb, selected_make):
-    """Scrapes models for the chosen make and asks the user to choose one conversationally."""
-    model_dropdown = "select#model"
-    model_map = build_dropdown_map(sb, model_dropdown)
-    
-    if not model_map:
-        print(f"\n[Error] Failed to read any models for {selected_make}.")
-        return False, None
-
-    print("\n" + "=" * 60)
-    print(f"STEP 2: CHOOSE A MODEL FOR {selected_make.upper()}")
-    print("=" * 60)
-    for i, model in enumerate(model_map.keys(), 1):
-        print(f"{model:<25}", end="\n" if i % 3 == 0 else "")
-    print("\n" + "-" * 60)
-    
-    while True:
-        user_choice = input(f"\nWhat Model are you looking for? (or press Enter to exit): ").strip()
-        if not user_choice:
-            return False, None
-        if user_choice in model_map:
-            sb.select_option_by_text(model_dropdown, model_map[user_choice])
-            return True, user_choice
-        print("Selection not recognized. Match the text exactly (Case Sensitive).")
-
-def ask_for_trim(sb, selected_model):
-    """Scrapes trims (if any) and asks the user to choose one conversationally."""
-    trim_dropdown = "select#aggregated_trim"
-    trim_map = build_dropdown_map(sb, trim_dropdown, timeout=3)
-    
-    if not trim_map:
-        print(f"\n--> No specific trims available for the {selected_model}. Skipping this step.")
+    if not options_map:
+        print(f"\n--> No options available for {step_title}. Skipping this step.")
         return True, None
 
     print("\n" + "=" * 60)
-    print(f"STEP 3: CHOOSE A TRIM FOR {selected_model.upper()}")
+    print(f"{step_title.upper()}")
     print("=" * 60)
-    for i, trim in enumerate(trim_map.keys(), 1):
-        print(f"{trim:<25}", end="\n" if i % 3 == 0 else "")
+    for i, opt in enumerate(options_map.keys(), 1):
+        print(f"{opt:<25}", end="\n" if i % 3 == 0 else "")
     print("\n" + "-" * 60)
     
     while True:
-        user_choice = input("\nWhat Trim are you looking for? (Press Enter to leave blank/Any): ").strip()
+        user_choice = input(f"\n{prompt_text} (Press Enter to leave blank/Any): ").strip()
         if not user_choice:
-            print("--> Bypassing trim selection.")
+            print(f"--> Bypassing {step_title} selection.")
             return True, None
-        if user_choice in trim_map:
-            sb.select_option_by_text(trim_dropdown, trim_map[user_choice])
+        if user_choice in options_map:
+            sb.select_option_by_text(dropdown_selector, options_map[user_choice])
             return True, user_choice
         print("Selection not recognized. Match the text exactly.")
+
+def ask_for_range(sb, min_selector, max_selector, step_title):
+    """
+    Handles 'From' and 'To' dropdowns. Asks for Min, updates the page, 
+    then asks for Max, dynamically reflecting restricted options.
+    """
+    print("\n" + "=" * 60)
+    print(f"{step_title.upper()}")
+    print("=" * 60)
+    
+    final_min = None
+    final_max = None
+    
+    # 1. Handle MINIMUM (From)
+    min_map = build_dropdown_map(sb, min_selector, timeout=5)
+    if min_map:
+        print(f"\n--- SELECT MINIMUM (FROM) ---")
+        for i, opt in enumerate(min_map.keys(), 1):
+            print(f"{opt:<20}", end="\n" if i % 4 == 0 else "")
+        print("\n" + "-" * 60)
+        
+        while True:
+            min_choice = input("Select 'From' value (Press Enter for Any): ").strip()
+            if not min_choice:
+                break
+            if min_choice in min_map:
+                sb.select_option_by_text(min_selector, min_map[min_choice])
+                final_min = min_choice
+                # Wait for the website to update the 'To' options based on this min choice
+                sb.wait(1.5) 
+                break
+            print("Selection not recognized. Match the text exactly.")
+
+    # 2. Handle MAXIMUM (To)
+    max_map = build_dropdown_map(sb, max_selector, timeout=5)
+    if max_map:
+        print(f"\n--- SELECT MAXIMUM (TO) ---")
+        for i, opt in enumerate(max_map.keys(), 1):
+            print(f"{opt:<20}", end="\n" if i % 4 == 0 else "")
+        print("\n" + "-" * 60)
+        
+        while True:
+            max_choice = input("Select 'To' value (Press Enter for Any): ").strip()
+            if not max_choice:
+                break
+            if max_choice in max_map:
+                sb.select_option_by_text(max_selector, max_map[max_choice])
+                final_max = max_choice
+                break
+            print("Selection not recognized. Match the text exactly.")
+
+    return True, final_min, final_max
 
 def run_interactive_scraper():
     response = {
         "success": False,
-        "final_make": None,
-        "final_model": None,
-        "final_trim": None,
-        "message": "User aborted the process."
+        "filters": {}
     }
 
     with SB(uc=True, test=False) as sb:
@@ -141,38 +140,42 @@ def run_interactive_scraper():
         sb.wait(1)
         open_filters(sb)
         sb.wait(1)
-        click_make_and_model_tab(sb)
+
+        # ---- STEP 1: MAKE & MODEL ----
+        click_accordion(sb, "make_and_model-facet-group")
         sb.wait(1)
-
-        # ---- STEP 1: CONVERSATIONAL MAKE ----
-        make_ok, final_make = ask_for_make(sb)
-        if not make_ok:
-            return response
-        sb.wait(1.5) # Allow cascade updates to complete
-
-        # ---- STEP 2: CONVERSATIONAL MODEL ----
-        model_ok, final_model = ask_for_model(sb, final_make)
-        if not model_ok:
-            return response
-        sb.wait(1.5)
-
-        # ---- STEP 3: CONVERSATIONAL TRIM ----
-        trim_ok, final_trim = ask_for_trim(sb, final_model)
-        if not trim_ok:
-            return response
-
-        print(f"\n✅ All selections complete!")
-        print(f"Active Filters -> Make: {final_make} | Model: {final_model} | Trim: {final_trim if final_trim else 'Any'}")
         
-        sb.wait(2) # Brief pause to observe the final state in the browser
+        _, final_make = ask_for_single_choice(sb, "select#make", "STEP 1: CHOOSE A MAKE", "What Make are you looking for?")
+        if final_make:
+            sb.wait(1.5)
+            _, final_model = ask_for_single_choice(sb, "select#model", f"STEP 2: CHOOSE A MODEL FOR {final_make}", "What Model are you looking for?")
+            if final_model:
+                sb.wait(1.5)
+                _, final_trim = ask_for_single_choice(sb, "select#aggregated_trim", f"STEP 3: CHOOSE A TRIM FOR {final_model}", "What Trim are you looking for?")
+        
+        # ---- STEP 4: MILEAGE RANGE ----
+        # Using the HTML snippet you provided (min_mileage / max_mileage)
+        # Note: If you want to do Year, change the selectors to select#year-from and select#year-to (or whatever AutoTrader uses)
+        
+        # Let's pretend the mileage dropdowns are inside a "Mileage" accordion 
+        # (AutoTrader usually uses "mileage-facet-group")
+        click_accordion(sb, "mileage-facet-group") 
+        sb.wait(1)
+        
+        _, min_miles, max_miles = ask_for_range(sb, "select#min_mileage", "select#max_mileage", "STEP 4: SET MILEAGE RANGE")
+
+        # ---- SUMMARY ----
+        print(f"\n✅ All selections complete!")
+        print(f"Make: {final_make} | Model: {final_model} | Trim: {final_trim if 'final_trim' in locals() and final_trim else 'Any'}")
+        print(f"Mileage: {min_miles if min_miles else 'Any'} to {max_miles if max_miles else 'Any'}")
         
         response["success"] = True
-        response["final_make"] = final_make
-        response["final_model"] = final_model
-        response["final_trim"] = final_trim
-        response["message"] = "Parameters interactively applied successfully."
-        
-        # You can add logic here to trigger the "Apply Filters" or "Show X Results" button
+        response["filters"] = {
+            "make": final_make,
+            "model": final_model,
+            "min_mileage": min_miles,
+            "max_mileage": max_miles
+        }
         
         input("\nPress Enter to close the browser session and exit OpenClaw...")
         return response
@@ -180,8 +183,5 @@ def run_interactive_scraper():
 if __name__ == "__main__":
     result = run_interactive_scraper()
     
-    # Final data payload returned to OpenClaw orchestrator if needed
-    if not result["success"]:
-        print(f"\n[OpenClaw Alert] {result['message']}")
-    else:
+    if result["success"]:
         print("\n[OpenClaw Success] Returning final parameter payload to the database...")
