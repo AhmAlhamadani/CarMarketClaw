@@ -1,0 +1,14 @@
+easyocr
+fastapi
+numpy
+opencv-python
+Pillow
+python-dotenv
+requests
+selenium
+seleniumbase
+supabase
+transformers
+uvicorn
+torch
+torchvision
