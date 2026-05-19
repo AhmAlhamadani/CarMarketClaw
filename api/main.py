@@ -12,6 +12,9 @@ def health():
 
 @app.get("/db_test")
 def test_db():
+    from api.db.supabase_client import supabase
+
+    supabase.table("fb_vehicles").select("id").limit(1).execute()
     return {"message": "Supabase connected successfully"}
 
 

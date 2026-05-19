@@ -17,6 +17,16 @@ def _first_row(response) -> dict | None:
     return data[0]
 
 
+def list_pending_enrichment() -> list[dict]:
+    response = (
+        supabase.table("fb_vehicles")
+        .select("*")
+        .is_("ai_last_updated", "null")
+        .execute()
+    )
+    return response.data or []
+
+
 def get_by_id(vehicle_id: str) -> dict:
     response = (
         supabase.table("fb_vehicles")
@@ -63,12 +73,19 @@ def save_scraped_vehicle(raw: dict) -> dict:
     return saved
 
 
-def save_agent_result(vehicle_id: str, raw: dict, allowed_fields: frozenset) -> dict:
+def save_agent_result(
+    vehicle_id: str,
+    raw: dict,
+    allowed_fields: frozenset,
+    *,
+    touch_ai_last_updated: bool = True,
+) -> dict:
     updates = normalize_agent_row(raw, allowed_fields)
     if not updates:
         raise HTTPException(status_code=422, detail="Agent produced no fields to save")
 
-    updates["ai_last_updated"] = datetime.now(UTC).isoformat()
+    if touch_ai_last_updated:
+        updates["ai_last_updated"] = datetime.now(UTC).isoformat()
 
     response = (
         supabase.table("fb_vehicles")

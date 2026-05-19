@@ -20,10 +20,16 @@ uvicorn api.main:app --reload # Windows/Mac/Linux
     Database Check:
     http://127.0.0.1:8000/db_test
 
-    Scrape Data:
+    Scrape Facebook Data:
     http://127.0.0.1:8000/scrape/run
 
-    Run Agents:
+    Facebook vehicles pending AI enrichment (ai_last_updated is null):
+    http://127.0.0.1:8000/fb_vehicles/pending_enrichment
+
+    Enrich car (plate → vehicle → damage → scam; only when ai_last_updated is null):
+    http://127.0.0.1:8000/agents/enrich_car/{vehicle_id}
+
+    Run Agents (individual):
     http://127.0.0.1:8000/agents/vehicle/{vehicle_id}
     http://127.0.0.1:8000/agents/scam/{vehicle_id}
     http://127.0.0.1:8000/agents/damage/{vehicle_id}
@@ -34,4 +40,3 @@ uvicorn api.main:app --reload # Windows/Mac/Linux
     
     AutoTrader saved matches (GET):
     http://127.0.0.1:8000/autotrader/matches/{fb_vehicle_id}
-
