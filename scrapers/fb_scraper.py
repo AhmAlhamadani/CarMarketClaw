@@ -75,20 +75,107 @@ def extract_mileage(text):
     return raw_val
 
 
+_PRODUCT_PHOTO_ALT = re.compile(r"^Product photo of\s+(.+)$", re.IGNORECASE)
+
+_MULTI_WORD_MAKES = (
+    "land rover", "aston martin", "rolls royce", "alfa romeo", "mercedes benz",
+    "mercedes-benz", "range rover", "great wall",
+)
+
+
+def _split_make_model(text: str) -> tuple[str, str]:
+    text = re.sub(r"\s+", " ", text.strip())
+    if not text:
+        return "Unknown", "Unknown"
+
+    lower = text.lower()
+    for phrase in sorted(_MULTI_WORD_MAKES, key=len, reverse=True):
+        if lower.startswith(phrase + " "):
+            rest = text[len(phrase) :].strip()
+            return phrase.title(), rest or "Unknown"
+        if lower == phrase:
+            return phrase.title(), "Unknown"
+
+    parts = text.split(None, 1)
+    return parts[0].title(), (parts[1] if len(parts) > 1 else "Unknown")
+
+
+def _normalize_model(make: str, model: str) -> str:
+    """Strip duplicated make prefix unless the remainder is only a digit (e.g. Mazda 2)."""
+    if not make or not model or model == "Unknown":
+        return model
+    if model.lower().startswith(make.lower()):
+        trimmed = model[len(make) :].strip()
+        if trimmed and not trimmed.isdigit():
+            return trimmed
+    return model
+
+
 def parse_title(title_text):
     if not title_text:
         return 0, "Unknown", "Unknown"
 
-    title_text = title_text.strip()
-    match = re.match(r'^(19\d{2}|20\d{2})\s+([A-Za-z\-]+)\s+(.+)$', title_text, re.IGNORECASE)
-    if not match:
+    title_text = title_text.strip().split("·")[0].strip()
+    title_text = re.sub(r"\s+", " ", title_text)
+
+    year_match = re.search(r"\b(19\d{2}|20\d{2})\b", title_text)
+    if not year_match:
         return 0, "Unknown", title_text
 
-    year = int(match.group(1))
-    if year > datetime.now().year + 1:
+    year = int(year_match.group(1))
+    if year < 1950 or year > datetime.now().year + 1:
         return 0, "Unknown", title_text
 
-    return year, match.group(2), match.group(3)
+    without_year = (title_text[: year_match.start()] + title_text[year_match.end() :]).strip()
+    without_year = re.sub(r"\s+", " ", without_year)
+    if not without_year:
+        return year, "Unknown", title_text
+
+    make, model = _split_make_model(without_year)
+    model = _normalize_model(make, model)
+    return year, make, model
+
+
+def _title_from_product_photo_alt(alt: str) -> str | None:
+    match = _PRODUCT_PHOTO_ALT.match((alt or "").strip())
+    return match.group(1).strip() if match else None
+
+
+def _extract_listing_title(sb) -> str | None:
+    """Mac/Windows Marketplace: title in h1 > span, or img[alt^='Product photo of']."""
+    try:
+        sb.wait_for_element("h1", timeout=15)
+        h1 = sb.find_element("h1")
+        text = (h1.text or "").strip()
+        if text and text.lower() != "unknown":
+            return text.split("·")[0].strip()
+    except Exception:
+        pass
+
+    try:
+        for img in sb.find_elements('img[alt*="Product photo"]'):
+            alt_title = _title_from_product_photo_alt(img.get_attribute("alt") or "")
+            if alt_title:
+                return alt_title
+    except Exception:
+        pass
+
+    try:
+        page_title = (sb.driver.title or "").strip()
+        if page_title and "facebook" not in page_title.lower():
+            return page_title.split("|")[0].strip()
+    except Exception:
+        pass
+
+    return None
+
+
+def _apply_title(vehicle: dict, title: str) -> None:
+    vehicle["title"] = title
+    year, make, model = parse_title(title)
+    vehicle["year"] = year
+    vehicle["make"] = make
+    vehicle["model"] = model
 
 
 def clean_images(images):
@@ -102,17 +189,32 @@ def clean_images(images):
     return list(set(cleaned))
 
 
-def is_valid_vehicle(v):
-    title = (v.get("title") or "").lower()
-    banned = ["tops prices", "buying cars", "wanted", "finance", "breaking", "spares", "parts"]
+_BANNED_TITLE_KEYWORDS = [
+    "tops prices", "buying cars", "wanted", "finance", "breaking", "spares", "parts",
+]
 
-    if any(b in title for b in banned):
-        return False
+
+def invalid_vehicle_reason(v) -> str | None:
+    title = (v.get("title") or "").strip()
+    title_lower = title.lower()
+
+    if not title or title_lower == "unknown":
+        return "title_not_found"
+    if any(b in title_lower for b in _BANNED_TITLE_KEYWORDS):
+        return "banned_keywords"
     if v["year"] < 1950 or v["year"] > datetime.now().year + 1:
-        return False
+        return "invalid_year"
     if v["make"] in ["Unknown", "", None]:
-        return False
-    return True
+        return "make_not_parsed"
+    return None
+
+
+def is_valid_vehicle(v):
+    return invalid_vehicle_reason(v) is None
+
+
+def should_mark_skipped_as_seen(reason: str) -> bool:
+    return reason == "banned_keywords"
 
 
 # ----------------------------
@@ -160,8 +262,7 @@ def get_organic_urls(sb):
 def scrape_detail_page(sb, url, fb_id):
     print(f"\n🚗 Scraping: {url}")
     sb.driver.get(url)
-    
-    human_sleep(3.0, 5.0)  
+    human_sleep(3.0, 5.0)
 
     vehicle = {
         "source_url": url,
@@ -186,23 +287,21 @@ def scrape_detail_page(sb, url, fb_id):
         "interior_colour": None,
     }
 
-    try:
-        title = sb.get_text("h1")
-        if title:
-            vehicle["title"] = title.strip()
-            year, make, model = parse_title(title)
-            vehicle["year"] = year
-            vehicle["make"] = make
-            vehicle["model"] = model
-    except:
-        pass
+    title = _extract_listing_title(sb)
+    if title:
+        _apply_title(vehicle, title)
 
-    try:
-        price_text = sb.get_text('//h1/following::span[contains(text(),"£")][1]')
-        if price_text:
-            vehicle["price"] = extract_first_integer(price_text)
-    except:
-        pass
+    for price_xpath in (
+        '//h1/following::span[contains(text(),"£")][1]',
+        '//span[contains(text(),"£")][1]',
+    ):
+        try:
+            price_text = sb.get_text(price_xpath)
+            if price_text and "£" in price_text:
+                vehicle["price"] = extract_first_integer(price_text)
+                break
+        except Exception:
+            continue
 
     try:
         imgs = sb.find_elements('img[alt*="Product photo"]')
@@ -211,21 +310,30 @@ def scrape_detail_page(sb, url, fb_id):
     except:
         pass
 
-    try:
-        desc_element = sb.find_element('//h2[contains(., "description")]/following::span[@dir="auto"][1]')
-        if desc_element:
-            vehicle["description"] = desc_element.text.strip()
-    except:
-        pass
+    for desc_xpath in (
+        '//h2[contains(., "Seller") and contains(., "description")]/following::span[@dir="auto"][1]',
+        '//h2[contains(., "description")]/following::span[@dir="auto"][1]',
+    ):
+        try:
+            desc_element = sb.find_element(desc_xpath)
+            if desc_element and desc_element.text.strip():
+                vehicle["description"] = desc_element.text.strip()
+                break
+        except Exception:
+            continue
 
     try:
         seller_elements = sb.find_elements('a[href*="/marketplace/profile/"]')
         for elem in seller_elements:
+            aria = (elem.get_attribute("aria-label") or "").strip()
+            if aria and aria.lower() not in ("seller details", "see profile"):
+                vehicle["seller_name"] = aria
+                break
             text = elem.text.strip().split("\n")[0]
             if text and text.lower() not in ["seller details", "message", "see profile"]:
                 vehicle["seller_name"] = text
                 break
-    except:
+    except Exception:
         pass
 
     try:
@@ -245,7 +353,7 @@ def scrape_detail_page(sb, url, fb_id):
                 elif "manual" in tl:
                     vehicle["transmission"] = "manual"
 
-            elif "fuel type" in tl or "fuel" in tl:
+            elif "fuel type" in tl or ("fuel" in tl and ":" in t):
                 fuel = t.split(":")[-1].strip().lower().replace(" ", "_")
                 if "petrol" in fuel:
                     vehicle["fuel_type"] = "petrol"
@@ -294,19 +402,32 @@ def scrape_detail_page(sb, url, fb_id):
                         vehicle["exterior_colour"] = p.split(":")[-1].strip()
                     if "interior" in pl:
                         vehicle["interior_colour"] = p.split(":")[-1].strip()
-    except:
+    except Exception:
         pass
 
-    if (vehicle["engine_size"] is None or vehicle["engine_size"] <= 0) and vehicle["description"]:
-        try:
-            desc_lower = vehicle["description"].lower()
-            fallback_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:litre|liter|\bl\b)', desc_lower)
-            if fallback_match:
-                parsed_val = float(fallback_match.group(1))
-                if 0.5 <= parsed_val <= 8.0: 
-                    vehicle["engine_size"] = parsed_val
-        except:
-            pass
+    if vehicle["description"]:
+        desc_lower = vehicle["description"].lower()
+        if vehicle["fuel_type"] == "other":
+            if "petrol" in desc_lower or "gasoline" in desc_lower:
+                vehicle["fuel_type"] = "petrol"
+            elif "diesel" in desc_lower:
+                vehicle["fuel_type"] = "diesel"
+            elif "hybrid" in desc_lower:
+                vehicle["fuel_type"] = "hybrid"
+            elif "electric" in desc_lower:
+                vehicle["fuel_type"] = "electric"
+
+        if vehicle["engine_size"] is None or vehicle["engine_size"] <= 0:
+            try:
+                fallback_match = re.search(
+                    r"(\d+(?:\.\d+)?)\s*(?:litre|liter|\bl\b)", desc_lower
+                )
+                if fallback_match:
+                    parsed_val = float(fallback_match.group(1))
+                    if 0.5 <= parsed_val <= 8.0:
+                        vehicle["engine_size"] = parsed_val
+            except Exception:
+                pass
 
     return vehicle
 
@@ -326,6 +447,7 @@ def run(interactive_login: bool | None = None) -> dict:
         "saved": 0,
         "skipped_seen": 0,
         "skipped_invalid": 0,
+        "skipped_parse": 0,
         "api_errors": 0,
         "errors": 0,
         "vehicles": [],
@@ -337,6 +459,10 @@ def run(interactive_login: bool | None = None) -> dict:
     print(f"📂 Loaded {len(seen_listings)} previously scraped listings.")
 
     with SB(uc=True, user_data_dir=PROFILE_DIR, headed=True) as sb:
+        try:
+            sb.set_window_size(1400, 900)
+        except Exception:
+            pass
         sb.driver.get(MARKETPLACE_URL)
         human_sleep(3.0, 6.0)
 
@@ -364,10 +490,16 @@ def run(interactive_login: bool | None = None) -> dict:
             try:
                 data = scrape_detail_page(sb, url, fb_id)
 
-                if not is_valid_vehicle(data):
-                    print(f"❌ Skipping junk: {data['title']}")
-                    mark_as_seen(seen_listings, fb_id)
-                    stats["skipped_invalid"] += 1
+                reason = invalid_vehicle_reason(data)
+                if reason:
+                    preview = data.get("title") or url
+                    if should_mark_skipped_as_seen(reason):
+                        print(f"❌ Skipping junk ({reason}): {preview}")
+                        mark_as_seen(seen_listings, fb_id)
+                        stats["skipped_invalid"] += 1
+                    else:
+                        print(f"⚠️ Skipping for retry ({reason}): {preview}")
+                        stats["skipped_parse"] += 1
                     continue
 
                 print(
