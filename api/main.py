@@ -1,10 +1,22 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+
 from api.routes.fb_vehicles import router as vehicles_router
 from api.routes.scraper import router as scraper_router
 from api.routes.agents import router as agents_router
 from api.routes.autotrader import router as autotrader_router
+from api.scheduler import start_scheduler, stop_scheduler
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def health():

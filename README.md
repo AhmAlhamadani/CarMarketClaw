@@ -11,6 +11,8 @@ source .venv/bin/activate # Mac/Linux
 
 uvicorn api.main:app --reload # Windows/Mac/Linux
 
+While the server is running, the Facebook scraper also runs automatically every day at **11:00** and **19:00** (local time by default). Optional: set `SCRAPE_SCHEDULE_TZ=Europe/London` in `.env` for a specific timezone.
+
 
 ## API Endpoints
 
@@ -22,7 +24,7 @@ uvicorn api.main:app --reload # Windows/Mac/Linux
 
 
 
-    Scrape Facebook Data:
+    Scrape Facebook Data (manual; also runs automatically at 11:00 and 19:00):
     http://127.0.0.1:8000/scrape/run
 
     Facebook vehicles pending AI enrichment:

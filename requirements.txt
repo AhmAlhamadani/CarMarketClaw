@@ -1,3 +1,4 @@
+apscheduler
 easyocr
 fastapi
 numpy
