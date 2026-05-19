@@ -27,6 +27,29 @@ def list_pending_enrichment() -> list[dict]:
     return response.data or []
 
 
+def list_pending_completion() -> list[dict]:
+    response = (
+        supabase.table("fb_vehicles")
+        .select("*")
+        .eq("completed", False)
+        .execute()
+    )
+    return response.data or []
+
+
+def mark_completed(vehicle_id: str) -> dict:
+    response = (
+        supabase.table("fb_vehicles")
+        .update({"completed": True})
+        .eq("id", vehicle_id)
+        .execute()
+    )
+    saved = _first_row(response)
+    if saved:
+        return saved
+    return get_by_id(vehicle_id)
+
+
 def get_by_id(vehicle_id: str) -> dict:
     response = (
         supabase.table("fb_vehicles")

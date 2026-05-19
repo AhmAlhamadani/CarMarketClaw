@@ -8,7 +8,7 @@ from api.db.at_vehicles_repo import (
     list_by_fb_vehicle_id,
     replace_matches_for_fb_vehicle,
 )
-from api.db.fb_vehicles_repo import get_by_id
+from api.db.fb_vehicles_repo import get_by_id, mark_completed
 from api.services.at_conversation import AtConversationBridge
 from scrapers.at_pipeline import run_pipeline
 
@@ -177,6 +177,7 @@ async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
                 fb_vehicle_id,
                 scraped,
             )
+            await asyncio.to_thread(mark_completed, fb_vehicle_id)
         except AtVehiclesSaveError as exc:
             await _safe_send(websocket, {
                 "type": "error",
