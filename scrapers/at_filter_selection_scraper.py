@@ -2,6 +2,8 @@ import re
 import time
 from typing import Callable
 
+from scrapers.at_option_matching import format_options_hint, match_option_choice
+
 # prompt_fn(step, title, prompt, options, allow_blank, suggested) -> str | None
 PromptFn = Callable[..., str | None]
 
@@ -17,7 +19,7 @@ def _read_choice(
     suggested: str | None = None,
 ) -> str | None:
     if prompt_fn is not None:
-        choice = prompt_fn(
+        return prompt_fn(
             step=step,
             title=title,
             prompt=prompt,
@@ -25,35 +27,32 @@ def _read_choice(
             allow_blank=allow_blank,
             suggested=suggested,
         )
-        if choice is None and allow_blank:
-            return None
-        if choice and choice in options:
-            return choice
-        if choice:
-            raise ValueError(f"Selection not recognized for {step}: {choice!r}")
-        return None
 
     print("\n" + "=" * 60)
     print(title.upper())
     print("=" * 60)
     for i, opt in enumerate(options, 1):
-        print(f"{opt:<25}", end="\n" if i % 3 == 0 else "")
+        print(f"  {i:>2}. {opt}")
     print("\n" + "-" * 60)
     if suggested:
         print(f"(Suggested from listing: {suggested})")
 
     while True:
         user_choice = input(
-            f"\n{prompt} (Press Enter to leave blank/Any): "
+            f"\n{prompt} (name, number, or Enter to skip): "
         ).strip()
         if not user_choice:
             if allow_blank:
                 print("--> Bypassing selection.")
                 return None
+            print("  Please enter a value or press Enter to skip.")
             continue
-        if user_choice in options:
-            return user_choice
-        print("Selection not recognized. Match the text exactly.")
+        matched = match_option_choice(user_choice, options)
+        if matched:
+            if matched != user_choice:
+                print(f"--> Using '{matched}'")
+            return matched
+        print(f"  Not recognized. Examples: {format_options_hint(options)}")
 
 
 def reject_cookies(sb):

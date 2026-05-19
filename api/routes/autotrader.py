@@ -8,7 +8,7 @@ from api.db.at_vehicles_repo import (
     list_by_fb_vehicle_id,
     replace_matches_for_fb_vehicle,
 )
-from api.db.fb_vehicles_repo import get_by_id, mark_completed
+from api.db.fb_vehicles_repo import get_by_id, mark_completed_comparisons
 from api.services.at_conversation import AtConversationBridge
 from scrapers.at_pipeline import run_pipeline
 
@@ -93,8 +93,9 @@ async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
     Interactive AutoTrader search for the 3 closest listing matches.
 
     Client protocol:
-      Server -> started / question / status / scraped / complete / error
-      Client -> plain text filter answers (e.g. Audi), or cancel
+      Server -> started / question (includes "display" text) / retry / matched / status / scraped / complete / error
+      Client -> plain text filter answers (e.g. Audi), number (e.g. 2), or cancel
+      Typos are fuzzy-matched; invalid answers re-prompt without disconnecting.
       Connection closes after complete.
     """
     await websocket.accept()
@@ -177,7 +178,7 @@ async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
                 fb_vehicle_id,
                 scraped,
             )
-            await asyncio.to_thread(mark_completed, fb_vehicle_id)
+            await asyncio.to_thread(mark_completed_comparisons, fb_vehicle_id)
         except AtVehiclesSaveError as exc:
             await _safe_send(websocket, {
                 "type": "error",

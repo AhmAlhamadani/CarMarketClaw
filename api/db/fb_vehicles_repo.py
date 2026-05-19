@@ -31,16 +31,55 @@ def list_pending_completion() -> list[dict]:
     response = (
         supabase.table("fb_vehicles")
         .select("*")
-        .eq("completed", False)
+        .eq("completed_comparisons", False)
         .execute()
     )
     return response.data or []
 
 
-def mark_completed(vehicle_id: str) -> dict:
+def list_pending_analysis() -> list[dict]:
+    """Enriched + AutoTrader done, but full analysis not yet run."""
     response = (
         supabase.table("fb_vehicles")
-        .update({"completed": True})
+        .select("*")
+        .eq("analysed_complete", False)
+        .eq("completed_comparisons", True)
+        .not_.is_("ai_last_updated", "null")
+        .execute()
+    )
+    return response.data or []
+
+
+def require_ready_for_analysis(vehicle: dict) -> None:
+    if vehicle.get("ai_last_updated") is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Vehicle not enriched (ai_last_updated is null)",
+        )
+    if not vehicle.get("completed_comparisons"):
+        raise HTTPException(
+            status_code=409,
+            detail="AutoTrader comparisons not complete (completed_comparisons is false)",
+        )
+
+
+def mark_analysed_complete(vehicle_id: str) -> dict:
+    response = (
+        supabase.table("fb_vehicles")
+        .update({"analysed_complete": True})
+        .eq("id", vehicle_id)
+        .execute()
+    )
+    saved = _first_row(response)
+    if saved:
+        return saved
+    return get_by_id(vehicle_id)
+
+
+def mark_completed_comparisons(vehicle_id: str) -> dict:
+    response = (
+        supabase.table("fb_vehicles")
+        .update({"completed_comparisons": True})
         .eq("id", vehicle_id)
         .execute()
     )

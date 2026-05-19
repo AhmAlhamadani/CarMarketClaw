@@ -35,16 +35,16 @@ While the server is running, the Facebook scraper also runs automatically every 
 
 
 
-    Facebook vehicles pending AutoTrader (completed is false):
+    Facebook vehicles pending AutoTrader (completed_comparisons is false):
     http://127.0.0.1:8000/fb_vehicles/pending_completion
 
-    AutoTrader (WebSocket — interactive filter conversation, saves top 3 matches; sets completed=true):
+    AutoTrader (WebSocket — interactive filter conversation, saves top 3 matches; sets completed_comparisons=true):
     ws://127.0.0.1:8000/autotrader/ws/{fb_vehicle_id}
-    
 
-    
-    AutoTrader saved matches (GET):
-    http://127.0.0.1:8000/autotrader/matches/{fb_vehicle_id}
 
-    Get one Facebook vehicle (includes AutoTrader matches):
-    http://127.0.0.1:8000/fb_vehicles/{vehicle_id}
+
+    Facebook vehicles pending full analysis (enriched + completed_comparisons; analysed_complete is false):
+    http://127.0.0.1:8000/fb_vehicles/pending_analysis
+
+    Full analysis package (vehicle + matches; requires enrichment + completed_comparisons; sets analysed_complete=true):
+    http://127.0.0.1:8000/fb_vehicles/{vehicle_id}/analysis
