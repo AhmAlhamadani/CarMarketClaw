@@ -1,6 +1,6 @@
 from api.db.supabase_client import supabase
-from clawbot.vision import build_vision_context
-from clawbot.agents.damage_detector import detect_damage
+from systems.vision import build_vision_context
+from systems.agents.damage_detector import detect_damage
 
 def run():
     print("Fetching vehicle...")

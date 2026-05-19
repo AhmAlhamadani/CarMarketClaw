@@ -1,5 +1,5 @@
-from clawbot.agents.plate_reader import read_plate
-from clawbot.vision import build_vision_context 
+from systems.agents.plate_reader import read_plate
+from systems.vision import build_vision_context 
 from api.db.supabase_client import supabase
 
 print("Fetching vehicle...")

@@ -7,11 +7,11 @@ from api.db.fb_vehicles_schema import (
     DAMAGE_AGENT_FIELDS,
     PLATE_AGENT_FIELDS,
 )
-from clawbot.vision import build_vision_context
-from clawbot.agents.vehicle_detector import detect_vehicle
-from clawbot.agents.scam_detector import detect_scam
-from clawbot.agents.damage_detector import detect_damage
-from clawbot.agents.plate_reader import read_plate
+from systems.vision import build_vision_context
+from systems.agents.vehicle_detector import detect_vehicle
+from systems.agents.scam_detector import detect_scam
+from systems.agents.damage_detector import detect_damage
+from systems.agents.plate_reader import read_plate
 
 router = APIRouter()
 

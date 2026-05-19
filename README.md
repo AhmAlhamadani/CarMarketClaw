@@ -6,9 +6,10 @@ This project is my entry for the DataVita OpenClaw Challenge. It is an AI-powere
 
 ## How To Use
 
-venv\Scripts\activate
+venv\Scripts\activate # Windows
+source .venv/bin/activate # Mac/Linux
 
-uvicorn api.main:app --reload
+uvicorn api.main:app --reload # Windows/Mac/Linux
 
 
 ## API Endpoints

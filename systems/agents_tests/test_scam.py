@@ -1,5 +1,5 @@
 from datetime import datetime, UTC
-from clawbot.agents.scam_detector import detect_scam
+from systems.agents.scam_detector import detect_scam
 
 def run_tests():
     # Helper to get the current year for the "new account" logic

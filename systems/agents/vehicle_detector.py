@@ -1,5 +1,5 @@
 from collections import Counter
-from clawbot.agents.plate_reader import read_plate
+from systems.agents.plate_reader import read_plate
 
 SERVICE_TERMS = [
     "SERVICE", "DETAILING", "VALETING", "REPAIR", "MECHANIC",

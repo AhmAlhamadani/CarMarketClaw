@@ -1,10 +1,10 @@
 from api.db.supabase_client import supabase
 
-from clawbot.vision import (
+from systems.vision import (
     build_vision_context
 )
 
-from clawbot.agents.vehicle_detector import (
+from systems.agents.vehicle_detector import (
     detect_vehicle
 )
 

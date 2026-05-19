@@ -1,7 +1,7 @@
 import cv2
 import requests
 import numpy as np
-from clawbot.agents.plate_reader import reader # Re-use the global reader instance
+from systems.agents.plate_reader import reader # Re-use the global reader instance
 
 def download_image(url):
     try:
