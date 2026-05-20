@@ -38,8 +38,15 @@ While the server is running, the Facebook scraper also runs automatically every 
     Facebook vehicles pending AutoTrader (completed_comparisons is false):
     http://127.0.0.1:8000/fb_vehicles/pending_completion
 
+    AutoTrader match (GET or POST — scrapes top 3 listings; sets completed_comparisons=true):
+    http://127.0.0.1:8000/autotrader/match/{fb_vehicle_id}
+    Params: make, model, trim, gearbox, min_mileage, max_mileage, min_year, max_year, use_suggestions (default true), force, save
+
     AutoTrader (WebSocket — interactive filter conversation, saves top 3 matches; sets completed_comparisons=true):
     ws://127.0.0.1:8000/autotrader/ws/{fb_vehicle_id}
+
+    Saved AutoTrader matches:
+    http://127.0.0.1:8000/autotrader/matches/{fb_vehicle_id}
 
 
 

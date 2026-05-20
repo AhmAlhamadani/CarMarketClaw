@@ -1,7 +1,9 @@
 import asyncio
 import json
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 
 from api.db.at_vehicles_repo import (
     AtVehiclesSaveError,
@@ -10,11 +12,49 @@ from api.db.at_vehicles_repo import (
 )
 from api.db.fb_vehicles_repo import get_by_id, mark_completed_comparisons
 from api.services.at_conversation import AtConversationBridge
+from api.services.at_prompt_provider import AtPromptProvider, build_step_overrides
 from scrapers.at_pipeline import run_pipeline
 
 router = APIRouter()
 
 _SKIP_TOKENS = frozenset({"", ".", "skip", "any"})
+_PIPELINE_TIMEOUT_SEC = 900
+_DB_TIMEOUT_SEC = 15
+
+_vehicle_locks: dict[str, asyncio.Lock] = {}
+_locks_guard = asyncio.Lock()
+
+
+class AutotraderMatchParams(BaseModel):
+    """Optional filter overrides. Omitted fields use FB listing hints or are skipped."""
+
+    make: str | None = Field(default=None, description="AutoTrader make (e.g. Audi)")
+    model: str | None = Field(default=None, description="Model for the selected make")
+    trim: str | None = Field(default=None, description="Trim / aggregated trim")
+    gearbox: str | None = Field(default=None, description="Automatic or Manual")
+    min_mileage: str | None = Field(default=None, description="Min mileage (dropdown label)")
+    max_mileage: str | None = Field(default=None, description="Max mileage (dropdown label)")
+    min_year: str | None = Field(default=None, description="Min year manufactured")
+    max_year: str | None = Field(default=None, description="Max year manufactured")
+    use_suggestions: bool = Field(
+        default=True,
+        description="When a filter is not set, accept values inferred from the Facebook listing",
+    )
+    force: bool = Field(
+        default=False,
+        description="Run even if completed_comparisons is already true",
+    )
+    save: bool = Field(
+        default=True,
+        description="Persist top matches and set completed_comparisons=true",
+    )
+
+
+async def _lock_for_vehicle(fb_vehicle_id: str) -> asyncio.Lock:
+    async with _locks_guard:
+        if fb_vehicle_id not in _vehicle_locks:
+            _vehicle_locks[fb_vehicle_id] = asyncio.Lock()
+        return _vehicle_locks[fb_vehicle_id]
 
 
 def _parse_client_input(raw: str) -> tuple[str, str | None]:
@@ -87,6 +127,190 @@ async def _safe_send(websocket: WebSocket, payload: dict) -> bool:
         return False
 
 
+async def _load_fb_vehicle(fb_vehicle_id: str) -> dict:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(get_by_id, fb_vehicle_id),
+            timeout=_DB_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="Database timed out. Check SUPABASE_URL/SUPABASE_KEY and .env.",
+        ) from exc
+
+
+def _run_pipeline_sync(
+    prompt_fn,
+    fb_vehicle: dict,
+    status_fn,
+) -> dict:
+    return run_pipeline(prompt_fn, fb_vehicle, status_fn)
+
+
+async def _execute_autotrader_match(
+    fb_vehicle_id: str,
+    fb_vehicle: dict,
+    *,
+    prompt_fn,
+    status_fn,
+    save: bool,
+) -> dict[str, Any]:
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_run_pipeline_sync, prompt_fn, fb_vehicle, status_fn),
+            timeout=_PIPELINE_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"AutoTrader pipeline timed out after {_PIPELINE_TIMEOUT_SEC}s",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "Filter selection did not complete",
+                "filters_used": result.get("filters_used", {}),
+            },
+        )
+
+    scraped = result.get("scraped_cars") or []
+    if not scraped:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "No listings found on AutoTrader for these filters",
+                "filters_used": result.get("filters_used", {}),
+            },
+        )
+
+    saved: list[dict] | None = None
+    if save:
+        try:
+            saved = await asyncio.to_thread(
+                replace_matches_for_fb_vehicle,
+                fb_vehicle_id,
+                scraped,
+            )
+            await asyncio.to_thread(mark_completed_comparisons, fb_vehicle_id)
+        except AtVehiclesSaveError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail={"message": str(exc), "matches": scraped, "saved": False},
+            ) from exc
+
+    return {
+        "status": "complete",
+        "fb_vehicle_id": fb_vehicle_id,
+        "filters_used": result.get("filters_used", {}),
+        "matches": scraped,
+        "saved": saved if save else False,
+    }
+
+
+@router.api_route("/match/{fb_vehicle_id}", methods=["GET", "POST"])
+async def autotrader_match(
+    fb_vehicle_id: str,
+    make: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    trim: str | None = Query(default=None),
+    gearbox: str | None = Query(default=None),
+    min_mileage: str | None = Query(default=None),
+    max_mileage: str | None = Query(default=None),
+    min_year: str | None = Query(default=None),
+    max_year: str | None = Query(default=None),
+    use_suggestions: bool = Query(default=True),
+    force: bool = Query(default=False),
+    save: bool = Query(default=True),
+):
+    """
+    Run AutoTrader filter selection and scrape the top 3 closest listings.
+
+    All filter query parameters are optional. Unset filters use values inferred
+    from the Facebook listing when use_suggestions=true, otherwise they are skipped.
+
+    Example:
+      POST /autotrader/match/{id}?make=Audi&model=A3
+      GET  /autotrader/match/{id}
+    """
+    params = AutotraderMatchParams(
+        make=make,
+        model=model,
+        trim=trim,
+        gearbox=gearbox,
+        min_mileage=min_mileage,
+        max_mileage=max_mileage,
+        min_year=min_year,
+        max_year=max_year,
+        use_suggestions=use_suggestions,
+        force=force,
+        save=save,
+    )
+    return await _autotrader_match_impl(fb_vehicle_id, params)
+
+
+async def _autotrader_match_impl(
+    fb_vehicle_id: str,
+    params: AutotraderMatchParams,
+) -> dict[str, Any]:
+    lock = await _lock_for_vehicle(fb_vehicle_id)
+    if lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="AutoTrader match already running for this vehicle",
+        )
+
+    async with lock:
+        fb_vehicle = await _load_fb_vehicle(fb_vehicle_id)
+
+        if fb_vehicle.get("completed_comparisons") and not params.force:
+            existing = await asyncio.to_thread(list_by_fb_vehicle_id, fb_vehicle_id)
+            return {
+                "status": "already_complete",
+                "message": "completed_comparisons is already true; pass force=true to re-run",
+                "fb_vehicle_id": fb_vehicle_id,
+                "matches": existing,
+                "saved": False,
+            }
+
+        provider = AtPromptProvider(
+            overrides=build_step_overrides(
+                make=params.make,
+                model=params.model,
+                trim=params.trim,
+                gearbox=params.gearbox,
+                min_mileage=params.min_mileage,
+                max_mileage=params.max_mileage,
+                min_year=params.min_year,
+                max_year=params.max_year,
+            ),
+            use_suggestions=params.use_suggestions,
+        )
+
+        payload = await _execute_autotrader_match(
+            fb_vehicle_id,
+            fb_vehicle,
+            prompt_fn=provider.prompt_fn,
+            status_fn=provider.send_status,
+            save=params.save,
+        )
+        payload["status_log"] = provider.status_log
+        payload["fb_vehicle"] = {
+            "id": fb_vehicle.get("id"),
+            "title": fb_vehicle.get("title"),
+            "make": fb_vehicle.get("make"),
+            "model": fb_vehicle.get("model"),
+            "year": fb_vehicle.get("year"),
+            "mileage": fb_vehicle.get("mileage"),
+            "transmission": fb_vehicle.get("transmission"),
+        }
+        return payload
+
+
 @router.websocket("/ws/{fb_vehicle_id}")
 async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
     """
@@ -97,6 +321,8 @@ async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
       Client -> plain text filter answers (e.g. Audi), number (e.g. 2), or cancel
       Typos are fuzzy-matched; invalid answers re-prompt without disconnecting.
       Connection closes after complete.
+
+    Prefer the REST endpoint for automation: GET/POST /autotrader/match/{fb_vehicle_id}
     """
     await websocket.accept()
     await websocket.send_json({
@@ -105,21 +331,9 @@ async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
     })
 
     try:
-        fb_vehicle = await asyncio.wait_for(
-            asyncio.to_thread(get_by_id, fb_vehicle_id),
-            timeout=15,
-        )
-    except asyncio.TimeoutError:
-        await websocket.send_json({
-            "type": "error",
-            "message": "Database timed out. Check SUPABASE_URL/SUPABASE_KEY and that uvicorn loaded .env.",
-        })
-        return
+        fb_vehicle = await _load_fb_vehicle(fb_vehicle_id)
     except HTTPException as exc:
         await websocket.send_json({"type": "error", "message": exc.detail})
-        return
-    except Exception as exc:
-        await websocket.send_json({"type": "error", "message": str(exc)})
         return
 
     loop = asyncio.get_running_loop()
@@ -142,11 +356,14 @@ async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
     reader = asyncio.create_task(_read_client_messages(websocket, bridge))
 
     try:
-        result = await asyncio.to_thread(
-            run_pipeline,
-            bridge.prompt_fn,
-            fb_vehicle,
-            bridge.send_status,
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                _run_pipeline_sync,
+                bridge.prompt_fn,
+                fb_vehicle,
+                bridge.send_status,
+            ),
+            timeout=_PIPELINE_TIMEOUT_SEC,
         )
 
         if not result.get("success"):
@@ -201,6 +418,11 @@ async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
                 pass
     except WebSocketDisconnect:
         bridge.cancel()
+    except asyncio.TimeoutError:
+        await _safe_send(websocket, {
+            "type": "error",
+            "message": f"Pipeline timed out after {_PIPELINE_TIMEOUT_SEC}s",
+        })
     except RuntimeError as exc:
         if "cancelled" in str(exc).lower():
             await _safe_send(websocket, {"type": "cancelled", "message": str(exc)})
