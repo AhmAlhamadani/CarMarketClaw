@@ -7,6 +7,9 @@ from scrapers.at_option_matching import format_options_hint, match_option_choice
 # prompt_fn(step, title, prompt, options, allow_blank, suggested) -> str | None
 PromptFn = Callable[..., str | None]
 
+SEARCH_APPLY_BUTTON = 'button[data-testid="search-apply-button"]'
+MIN_RESULT_COUNT = 15
+
 
 def _read_choice(
     prompt_fn: PromptFn | None,
@@ -66,6 +69,32 @@ def reject_cookies(sb):
         pass
     finally:
         sb.switch_to_default_content()
+
+
+def get_search_result_count(sb) -> int | None:
+    """Parse 'Search 20 cars' from the apply button."""
+    try:
+        sb.wait_for_element_visible(SEARCH_APPLY_BUTTON, timeout=5)
+        text = sb.get_text(SEARCH_APPLY_BUTTON).strip()
+        match = re.search(r"Search\s+([\d,]+)\s+car", text, re.IGNORECASE)
+        if match:
+            return int(match.group(1).replace(",", ""))
+    except Exception:
+        pass
+    return None
+
+
+def should_stop_adding_filters(sb, *, stage: str) -> bool:
+    """Return True when the live result count is below MIN_RESULT_COUNT."""
+    sb.wait(1)
+    count = get_search_result_count(sb)
+    if count is not None and count < MIN_RESULT_COUNT:
+        print(
+            f"\n--> {count} cars match after {stage} "
+            f"(< {MIN_RESULT_COUNT}). Skipping remaining filters."
+        )
+        return True
+    return False
 
 
 def open_filters(sb):
@@ -196,6 +225,8 @@ def ask_for_range(
             sb.select_option_by_text(min_selector, min_map[min_choice])
             final_min = min_choice
             sb.wait(1.5)
+            if should_stop_adding_filters(sb, stage=f"{step_id} minimum"):
+                return True, final_min, final_max
 
     max_map = build_dropdown_map(sb, max_selector, timeout=5)
     if max_map:
@@ -212,6 +243,8 @@ def ask_for_range(
         if max_choice:
             sb.select_option_by_text(max_selector, max_map[max_choice])
             final_max = max_choice
+            if should_stop_adding_filters(sb, stage=f"{step_id} maximum"):
+                return True, final_min, final_max
 
     return True, final_min, final_max
 
@@ -225,6 +258,7 @@ def run_interactive_scraper(sb, prompt_fn: PromptFn | None = None, suggestions: 
     final_trim = None
     final_gearbox = None
     min_miles = max_miles = min_year = max_year = None
+    stop_filters = False
 
     print("Running OpenClaw Filter Selection...")
 
@@ -245,7 +279,10 @@ def run_interactive_scraper(sb, prompt_fn: PromptFn | None = None, suggestions: 
         prompt_fn=prompt_fn,
         suggested=suggestions.get("make"),
     )
-    if final_make:
+    if final_make and should_stop_adding_filters(sb, stage="make"):
+        stop_filters = True
+
+    if not stop_filters and final_make:
         sb.wait(1.5)
         _, final_model = ask_for_single_choice(
             sb,
@@ -256,7 +293,10 @@ def run_interactive_scraper(sb, prompt_fn: PromptFn | None = None, suggestions: 
             prompt_fn=prompt_fn,
             suggested=suggestions.get("model"),
         )
-        if final_model:
+        if final_model and should_stop_adding_filters(sb, stage="model"):
+            stop_filters = True
+
+        if not stop_filters and final_model:
             sb.wait(1.5)
             _, final_trim = ask_for_single_choice(
                 sb,
@@ -266,60 +306,72 @@ def run_interactive_scraper(sb, prompt_fn: PromptFn | None = None, suggestions: 
                 step_id="trim",
                 prompt_fn=prompt_fn,
             )
+            if final_trim and should_stop_adding_filters(sb, stage="trim"):
+                stop_filters = True
 
-    sb.wait(1.5)
-    click_accordion(sb, "gearbox-facet-group")
-    sb.wait(1)
+    if not stop_filters:
+        sb.wait(1.5)
+        click_accordion(sb, "gearbox-facet-group")
+        sb.wait(1)
 
-    _, final_gearbox = ask_for_gearbox(
-        sb,
-        prompt_fn=prompt_fn,
-        suggested=suggestions.get("gearbox"),
-    )
+        _, final_gearbox = ask_for_gearbox(
+            sb,
+            prompt_fn=prompt_fn,
+            suggested=suggestions.get("gearbox"),
+        )
+        if final_gearbox and should_stop_adding_filters(sb, stage="gearbox"):
+            stop_filters = True
 
-    sb.wait(1.5)
-    click_accordion(sb, "mileage-facet-group")
-    sb.wait(1)
+    if not stop_filters:
+        sb.wait(1.5)
+        click_accordion(sb, "mileage-facet-group")
+        sb.wait(1)
 
-    _, min_miles, max_miles = ask_for_range(
-        sb,
-        "select#min_mileage",
-        "select#max_mileage",
-        "STEP 5: SET MILEAGE RANGE",
-        step_id="mileage",
-        prompt_fn=prompt_fn,
-        suggested_min=suggestions.get("min_mileage"),
-        suggested_max=suggestions.get("max_mileage"),
-    )
+        _, min_miles, max_miles = ask_for_range(
+            sb,
+            "select#min_mileage",
+            "select#max_mileage",
+            "STEP 5: SET MILEAGE RANGE",
+            step_id="mileage",
+            prompt_fn=prompt_fn,
+            suggested_min=suggestions.get("min_mileage"),
+            suggested_max=suggestions.get("max_mileage"),
+        )
+        if (min_miles or max_miles) and should_stop_adding_filters(sb, stage="mileage"):
+            stop_filters = True
 
-    sb.wait(1.5)
-    click_accordion(sb, "year-facet-group")
-    sb.wait(1)
+    if not stop_filters:
+        sb.wait(1.5)
+        click_accordion(sb, "year-facet-group")
+        sb.wait(1)
 
-    _, min_year, max_year = ask_for_range(
-        sb,
-        "select#min_year_manufactured",
-        "select#max_year_manufactured",
-        "STEP 6: SET YEAR RANGE",
-        step_id="year",
-        prompt_fn=prompt_fn,
-        suggested_min=suggestions.get("min_year"),
-        suggested_max=suggestions.get("max_year"),
-    )
+        _, min_year, max_year = ask_for_range(
+            sb,
+            "select#min_year_manufactured",
+            "select#max_year_manufactured",
+            "STEP 6: SET YEAR RANGE",
+            step_id="year",
+            prompt_fn=prompt_fn,
+            suggested_min=suggestions.get("min_year"),
+            suggested_max=suggestions.get("max_year"),
+        )
 
     print("\n" + "=" * 60)
     print("STEP 7: APPLYING SEARCH FILTERS")
     print("=" * 60)
     try:
-        search_btn = 'button[data-testid="search-apply-button"]'
-        sb.wait_for_element_visible(search_btn, timeout=10)
-        sb.js_click(search_btn)
+        sb.wait_for_element_visible(SEARCH_APPLY_BUTTON, timeout=10)
+        sb.js_click(SEARCH_APPLY_BUTTON)
         print("--> Clicked 'Search' button. Waiting for results to load...")
         sb.wait(3)
     except Exception as e:
         print(f"--> Failed to click the Search button: {e}")
 
+    result_count = get_search_result_count(sb)
+
     print("\n✅ All selections complete!")
+    if stop_filters:
+        print(f"Stopped early — {result_count} cars in search preview.")
     print(
         f"Make: {final_make} | Model: {final_model} | Trim: {final_trim or 'Any'}"
     )
@@ -328,6 +380,8 @@ def run_interactive_scraper(sb, prompt_fn: PromptFn | None = None, suggestions: 
     print(f"Year: {min_year or 'Any'} to {max_year or 'Any'}")
 
     response["success"] = True
+    response["filters_stopped_early"] = stop_filters
+    response["search_result_count"] = result_count
     response["filters"] = {
         "make": final_make,
         "model": final_model,

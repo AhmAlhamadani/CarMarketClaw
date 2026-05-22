@@ -72,11 +72,19 @@ def run_pipeline(
                 "scraped_cars": [],
             }
 
+        if filter_data.get("filters_stopped_early"):
+            count = filter_data.get("search_result_count")
+            status(
+                f"Stopped adding filters early ({count} cars in preview, below 15)."
+            )
+
         status("Search applied. Scraping top 3 listings (keep this window open)...")
         car_results = scrape_top_cars(sb)
         status(f"Scraped {len(car_results)} listing(s). Saving to database next...")
         return {
             "success": True,
             "filters_used": filter_data["filters"],
+            "filters_stopped_early": filter_data.get("filters_stopped_early", False),
+            "search_result_count": filter_data.get("search_result_count"),
             "scraped_cars": car_results,
         }

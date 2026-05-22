@@ -12,7 +12,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_DIR = os.path.join(SCRIPT_DIR, "stealth_profile")
 SEEN_LISTINGS_FILE = os.path.join(SCRIPT_DIR, "seen_listings.json")
 
-MARKETPLACE_URL = "https://www.facebook.com/marketplace/glasgow/search?daysSinceListed=2&query=Vehicles&category_id=546583916084032&exact=false&referral_ui_component=category_menu_item&locale=en_GB"
+MARKETPLACE_URL = "https://www.facebook.com/marketplace/glasgow/search?maxPrice=5000&daysSinceListed=2&minYear=2005&topLevelVehicleType=car_truck&query=Vehicles&category_id=546583916084032&exact=false&referral_ui_component=category_menu_item&locale=en_GB"
 API_ENDPOINT = "http://localhost:8000/fb_vehicles/"
 
 
@@ -224,9 +224,16 @@ def should_mark_skipped_as_seen(reason: str) -> bool:
 def scroll_to_load_listings(sb, scroll_count=8):
     print("⏳ Scrolling Marketplace naturally...")
     for i in range(scroll_count):
+        # Optimization: Stop scrolling if we've hit the "outside your search" boundary
+        try:
+            if sb.is_element_present('//span[contains(text(), "Results from outside your search")]'):
+                print("🛑 Reached 'outside your search' boundary. Stopping scroll early.")
+                break
+        except Exception:
+            pass
+
         scroll_amount = random.randint(400, 900)
         sb.execute_script(f"window.scrollBy(0, {scroll_amount});")
-        
         # Random pause between scrolls
         human_sleep(1.2, 3.5)
         print(f"   Scroll {i+1}/{scroll_count}")
@@ -234,24 +241,41 @@ def scroll_to_load_listings(sb, scroll_count=8):
 
 def get_organic_urls(sb):
     print("🔍 Filtering listings...")
+    
+    # 1. Find the Y-coordinate of the divider (if it exists)
+    divider_y = float('inf')
+    try:
+        # Use a short timeout so we don't stall if the text isn't on the page yet
+        divider = sb.find_element('//span[contains(text(), "Results from outside your search")]', timeout=1)
+        if divider:
+            divider_y = divider.location['y']
+            print(f"📍 Found 'outside search' boundary at Y:{divider_y}. Skipping items below this.")
+    except Exception:
+        # If the text isn't found, all results currently loaded are likely local
+        pass
+
     links = sb.find_elements('a')
     urls = []
-
     for link in links:
         try:
             href = link.get_attribute("href")
             if not href or "/marketplace/item/" not in href:
                 continue
-
+            
+            # 2. Skip any listings rendered physically below the divider
+            if link.location['y'] > divider_y:
+                continue
+                
             text = link.text.lower()
             if "sponsored" in text or "ad" in text:
                 continue
-
+                
             clean = href.split("?")[0]
             if clean not in urls:
                 urls.append(clean)
-        except:
+        except Exception:
             continue
+            
     return urls
 
 

@@ -1,8 +1,7 @@
 import asyncio
-import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.db.at_vehicles_repo import (
@@ -10,14 +9,12 @@ from api.db.at_vehicles_repo import (
     list_by_fb_vehicle_id,
     replace_matches_for_fb_vehicle,
 )
-from api.db.fb_vehicles_repo import get_by_id, mark_completed_comparisons
-from api.services.at_conversation import AtConversationBridge
+from api.db.fb_vehicles_repo import get_by_id_or_fb_id, mark_completed_comparisons
 from api.services.at_prompt_provider import AtPromptProvider, build_step_overrides
 from scrapers.at_pipeline import run_pipeline
 
 router = APIRouter()
 
-_SKIP_TOKENS = frozenset({"", ".", "skip", "any"})
 _PIPELINE_TIMEOUT_SEC = 900
 _DB_TIMEOUT_SEC = 15
 
@@ -57,80 +54,10 @@ async def _lock_for_vehicle(fb_vehicle_id: str) -> asyncio.Lock:
         return _vehicle_locks[fb_vehicle_id]
 
 
-def _parse_client_input(raw: str) -> tuple[str, str | None]:
-    """
-    Returns (action, value) where action is 'answer' or 'cancel'.
-
-    Plain text (wscat-friendly):
-      Audi          -> answer Audi
-      (empty Enter) -> skip (None)
-      cancel        -> cancel search
-    """
-    text = raw.strip()
-    if not text:
-        return "answer", None
-
-    if text[0] in "{[":
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Invalid JSON: {exc}") from exc
-        if not isinstance(data, dict):
-            raise ValueError("JSON message must be an object")
-        msg_type = data.get("type")
-        if msg_type == "cancel":
-            return "cancel", None
-        if msg_type == "answer":
-            value = data.get("value")
-            if value is not None and not isinstance(value, str):
-                value = str(value)
-            return "answer", value
-        raise ValueError(f"Unknown message type: {msg_type!r}")
-
-    if text.lower() == "cancel":
-        return "cancel", None
-    if text.lower() in _SKIP_TOKENS:
-        return "answer", None
-    return "answer", text
-
-
-async def _read_client_messages(websocket: WebSocket, bridge: AtConversationBridge) -> None:
-    while True:
-        message = await websocket.receive()
-        if message.get("type") == "websocket.disconnect":
-            break
-
-        if "text" not in message:
-            await _safe_send(websocket, {
-                "type": "error",
-                "message": "Send a text line (e.g. Audi) or JSON answer.",
-            })
-            continue
-
-        try:
-            action, value = _parse_client_input(message["text"])
-        except ValueError as exc:
-            await _safe_send(websocket, {"type": "error", "message": str(exc)})
-            continue
-
-        if action == "cancel":
-            bridge.cancel()
-            break
-        bridge.deliver_answer(value)
-
-
-async def _safe_send(websocket: WebSocket, payload: dict) -> bool:
-    try:
-        await websocket.send_json(payload)
-        return True
-    except (WebSocketDisconnect, RuntimeError):
-        return False
-
-
-async def _load_fb_vehicle(fb_vehicle_id: str) -> dict:
+async def _load_fb_vehicle(ref: str) -> dict:
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(get_by_id, fb_vehicle_id),
+            asyncio.to_thread(get_by_id_or_fb_id, ref),
             timeout=_DB_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError as exc:
@@ -207,6 +134,8 @@ async def _execute_autotrader_match(
         "status": "complete",
         "fb_vehicle_id": fb_vehicle_id,
         "filters_used": result.get("filters_used", {}),
+        "filters_stopped_early": result.get("filters_stopped_early", False),
+        "search_result_count": result.get("search_result_count"),
         "matches": scraped,
         "saved": saved if save else False,
     }
@@ -233,9 +162,11 @@ async def autotrader_match(
     All filter query parameters are optional. Unset filters use values inferred
     from the Facebook listing when use_suggestions=true, otherwise they are skipped.
 
+    Path accepts Supabase uuid (id) or Facebook listing id (fb_id).
+
     Example:
       POST /autotrader/match/{id}?make=Audi&model=A3
-      GET  /autotrader/match/{id}
+      GET  /autotrader/match/{fb_id}
     """
     params = AutotraderMatchParams(
         make=make,
@@ -254,10 +185,13 @@ async def autotrader_match(
 
 
 async def _autotrader_match_impl(
-    fb_vehicle_id: str,
+    vehicle_ref: str,
     params: AutotraderMatchParams,
 ) -> dict[str, Any]:
-    lock = await _lock_for_vehicle(fb_vehicle_id)
+    fb_vehicle = await _load_fb_vehicle(vehicle_ref)
+    vehicle_id = fb_vehicle["id"]
+
+    lock = await _lock_for_vehicle(vehicle_id)
     if lock.locked():
         raise HTTPException(
             status_code=409,
@@ -265,14 +199,12 @@ async def _autotrader_match_impl(
         )
 
     async with lock:
-        fb_vehicle = await _load_fb_vehicle(fb_vehicle_id)
-
         if fb_vehicle.get("completed_comparisons") and not params.force:
-            existing = await asyncio.to_thread(list_by_fb_vehicle_id, fb_vehicle_id)
+            existing = await asyncio.to_thread(list_by_fb_vehicle_id, vehicle_id)
             return {
                 "status": "already_complete",
                 "message": "completed_comparisons is already true; pass force=true to re-run",
-                "fb_vehicle_id": fb_vehicle_id,
+                "fb_vehicle_id": vehicle_id,
                 "matches": existing,
                 "saved": False,
             }
@@ -292,7 +224,7 @@ async def _autotrader_match_impl(
         )
 
         payload = await _execute_autotrader_match(
-            fb_vehicle_id,
+            vehicle_id,
             fb_vehicle,
             prompt_fn=provider.prompt_fn,
             status_fn=provider.send_status,
@@ -309,141 +241,3 @@ async def _autotrader_match_impl(
             "transmission": fb_vehicle.get("transmission"),
         }
         return payload
-
-
-@router.websocket("/ws/{fb_vehicle_id}")
-async def autotrader_match_ws(websocket: WebSocket, fb_vehicle_id: str):
-    """
-    Interactive AutoTrader search for the 3 closest listing matches.
-
-    Client protocol:
-      Server -> started / question (includes "display" text) / retry / matched / status / scraped / complete / error
-      Client -> plain text filter answers (e.g. Audi), number (e.g. 2), or cancel
-      Typos are fuzzy-matched; invalid answers re-prompt without disconnecting.
-      Connection closes after complete.
-
-    Prefer the REST endpoint for automation: GET/POST /autotrader/match/{fb_vehicle_id}
-    """
-    await websocket.accept()
-    await websocket.send_json({
-        "type": "status",
-        "message": "Connected. Loading Facebook listing from database...",
-    })
-
-    try:
-        fb_vehicle = await _load_fb_vehicle(fb_vehicle_id)
-    except HTTPException as exc:
-        await websocket.send_json({"type": "error", "message": exc.detail})
-        return
-
-    loop = asyncio.get_running_loop()
-    bridge = AtConversationBridge(websocket, loop, fb_vehicle)
-
-    await websocket.send_json({
-        "type": "started",
-        "fb_vehicle_id": fb_vehicle_id,
-        "fb_vehicle": {
-            "id": fb_vehicle.get("id"),
-            "title": fb_vehicle.get("title"),
-            "make": fb_vehicle.get("make"),
-            "model": fb_vehicle.get("model"),
-            "year": fb_vehicle.get("year"),
-            "mileage": fb_vehicle.get("mileage"),
-            "transmission": fb_vehicle.get("transmission"),
-        },
-    })
-
-    reader = asyncio.create_task(_read_client_messages(websocket, bridge))
-
-    try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                _run_pipeline_sync,
-                bridge.prompt_fn,
-                fb_vehicle,
-                bridge.send_status,
-            ),
-            timeout=_PIPELINE_TIMEOUT_SEC,
-        )
-
-        if not result.get("success"):
-            await _safe_send(websocket, {
-                "type": "error",
-                "message": "Filter selection did not complete",
-                "filters_used": result.get("filters_used", {}),
-            })
-            return
-
-        scraped = result.get("scraped_cars") or []
-        if not scraped:
-            await _safe_send(websocket, {
-                "type": "error",
-                "message": "No listings found on AutoTrader for these filters",
-                "filters_used": result.get("filters_used", {}),
-            })
-            return
-
-        await _safe_send(websocket, {
-            "type": "scraped",
-            "message": f"Found {len(scraped)} listing(s). Saving to database...",
-            "matches": scraped,
-        })
-
-        try:
-            saved = await asyncio.to_thread(
-                replace_matches_for_fb_vehicle,
-                fb_vehicle_id,
-                scraped,
-            )
-            await asyncio.to_thread(mark_completed_comparisons, fb_vehicle_id)
-        except AtVehiclesSaveError as exc:
-            await _safe_send(websocket, {
-                "type": "error",
-                "message": str(exc),
-                "matches": scraped,
-                "saved": False,
-            })
-            return
-
-        if await _safe_send(websocket, {
-            "type": "complete",
-            "fb_vehicle_id": fb_vehicle_id,
-            "filters_used": result.get("filters_used", {}),
-            "matches": scraped,
-            "saved": saved,
-        }):
-            try:
-                await websocket.close(code=1000, reason="complete")
-            except Exception:
-                pass
-    except WebSocketDisconnect:
-        bridge.cancel()
-    except asyncio.TimeoutError:
-        await _safe_send(websocket, {
-            "type": "error",
-            "message": f"Pipeline timed out after {_PIPELINE_TIMEOUT_SEC}s",
-        })
-    except RuntimeError as exc:
-        if "cancelled" in str(exc).lower():
-            await _safe_send(websocket, {"type": "cancelled", "message": str(exc)})
-        else:
-            await _safe_send(websocket, {"type": "error", "message": str(exc)})
-    except AtVehiclesSaveError as exc:
-        await _safe_send(websocket, {"type": "error", "message": str(exc), "saved": False})
-    except Exception as exc:
-        await _safe_send(websocket, {"type": "error", "message": str(exc)})
-    finally:
-        reader.cancel()
-        try:
-            await reader
-        except asyncio.CancelledError:
-            pass
-        except WebSocketDisconnect:
-            pass
-
-
-@router.get("/matches/{fb_vehicle_id}")
-def get_saved_matches(fb_vehicle_id: str):
-    """Return previously saved AutoTrader matches for a Facebook listing."""
-    get_by_id(fb_vehicle_id)
-    return {"fb_vehicle_id": fb_vehicle_id, "matches": list_by_fb_vehicle_id(fb_vehicle_id)}

@@ -47,6 +47,16 @@ def replace_matches_for_fb_vehicle_api(fb_vehicle_id: str, cars: list[dict]) -> 
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def delete_by_fb_vehicle_id(fb_vehicle_id: str) -> int:
+    response = (
+        supabase.table("at_vehicles")
+        .delete()
+        .eq("fb_vehicle_id", fb_vehicle_id)
+        .execute()
+    )
+    return len(response.data or [])
+
+
 def list_by_fb_vehicle_id(fb_vehicle_id: str) -> list[dict]:
     response = (
         supabase.table("at_vehicles")

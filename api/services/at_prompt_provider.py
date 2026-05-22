@@ -1,4 +1,4 @@
-"""Non-interactive prompt provider for AutoTrader filter selection (REST API)."""
+"""Prompt provider for AutoTrader filter selection (REST API)."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def build_step_overrides(
 @dataclass
 class AtPromptProvider:
     """
-    Supplies filter answers to the Selenium scraper without a WebSocket.
+    Supplies filter answers to the Selenium scraper via query parameters and FB listing hints.
 
     Resolution order per step:
       1. Explicit override for that step (must match an available option)

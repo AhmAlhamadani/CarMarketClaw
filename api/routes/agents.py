@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from api.db.fb_vehicles_repo import get_by_id, save_agent_result
+from api.db.fb_vehicles_repo import get_by_id, list_pending_enrichment, save_agent_result
 from api.db.fb_vehicles_schema import (
     VEHICLE_AGENT_FIELDS,
     SCAM_AGENT_FIELDS,
@@ -31,6 +31,56 @@ def _run_agent(vehicle_id: str, agent_name: str, allowed_fields: frozenset, resu
         "message": "agent result saved",
         "agent_result": {k: vehicle[k] for k in allowed_fields if k in vehicle},
         "vehicle": vehicle,
+    }
+
+
+_ALL_AGENT_FIELDS = (
+    PLATE_AGENT_FIELDS
+    | VEHICLE_AGENT_FIELDS
+    | DAMAGE_AGENT_FIELDS
+    | SCAM_AGENT_FIELDS
+)
+
+
+def _enrich_vehicle(vehicle: dict) -> dict:
+    """Run plate, vehicle, damage, and scam agents for one listing."""
+    vehicle_id = vehicle["id"]
+    if vehicle.get("ai_last_updated") is not None:
+        return {
+            "vehicle_id": vehicle_id,
+            "status": "skipped",
+            "reason": "already enriched",
+        }
+
+    print(f"▶ Starting enrich_car | id={vehicle_id}")
+    print(f"  Listing: {vehicle.get('title')}")
+    vision = _vision_for(vehicle)
+
+    steps = [
+        ("plate reader", PLATE_AGENT_FIELDS, lambda: read_plate(vision)),
+        ("vehicle detector", VEHICLE_AGENT_FIELDS, lambda: detect_vehicle(vehicle, vision)),
+        ("damage detector", DAMAGE_AGENT_FIELDS, lambda: detect_damage(vehicle, vision)),
+        ("scam detector", SCAM_AGENT_FIELDS, lambda: detect_scam(vehicle)),
+    ]
+
+    agent_results = {}
+    for index, (agent_name, fields, run) in enumerate(steps):
+        print(f"  Running {agent_name}...")
+        result = run()
+        touch = index == len(steps) - 1
+        vehicle = save_agent_result(
+            vehicle_id, result, fields, touch_ai_last_updated=touch
+        )
+        agent_results[agent_name] = {k: vehicle[k] for k in fields if k in vehicle}
+        print(f"✅ {agent_name} finished for {vehicle_id}")
+
+    print(f"✅ enrich_car complete for {vehicle_id}")
+    return {
+        "vehicle_id": vehicle_id,
+        "status": "enriched",
+        "title": vehicle.get("title"),
+        "agent_results": agent_results,
+        "agent_result": {k: vehicle[k] for k in _ALL_AGENT_FIELDS if k in vehicle},
     }
 
 
@@ -69,50 +119,34 @@ def run_plate_reader(vehicle_id: str):
     return _run_agent(vehicle_id, "plate reader", PLATE_AGENT_FIELDS, read_plate(vision))
 
 
-_ALL_AGENT_FIELDS = (
-    PLATE_AGENT_FIELDS
-    | VEHICLE_AGENT_FIELDS
-    | DAMAGE_AGENT_FIELDS
-    | SCAM_AGENT_FIELDS
-)
+@router.api_route("/enrich_car", methods=["GET", "POST"])
+def enrich_car():
+    """Enrich all Facebook vehicles where ai_last_updated is null."""
+    pending = list_pending_enrichment()
+    if not pending:
+        return {"message": "enrichment complete"}
 
+    print(f"▶ Starting enrich_car batch | {len(pending)} vehicle(s)")
+    failures: list[str] = []
 
-@router.api_route("/enrich_car/{vehicle_id}", methods=["GET", "POST"])
-def enrich_car(vehicle_id: str):
-    """Run plate, vehicle, damage, and scam agents in order. Only when ai_last_updated is null."""
-    vehicle = get_by_id(vehicle_id)
-    if vehicle.get("ai_last_updated") is not None:
+    for vehicle in pending:
+        vehicle_id = vehicle["id"]
+        try:
+            result = _enrich_vehicle(vehicle)
+            if result.get("status") == "skipped":
+                print(f"  Skipped {vehicle_id}: {result.get('reason')}")
+            else:
+                print(f"  Enriched {vehicle_id}")
+        except HTTPException as exc:
+            failures.append(f"{vehicle_id}: {exc.detail}")
+        except Exception as exc:
+            failures.append(f"{vehicle_id}: {exc}")
+
+    if failures:
         raise HTTPException(
-            status_code=409,
-            detail="Vehicle already enriched (ai_last_updated is set)",
+            status_code=500,
+            detail={"message": "enrichment failed", "errors": failures},
         )
 
-    print(f"▶ Starting enrich_car | id={vehicle_id}")
-    print(f"  Listing: {vehicle.get('title')}")
-    vision = _vision_for(vehicle)
-
-    steps = [
-        ("plate reader", PLATE_AGENT_FIELDS, lambda: read_plate(vision)),
-        ("vehicle detector", VEHICLE_AGENT_FIELDS, lambda: detect_vehicle(vehicle, vision)),
-        ("damage detector", DAMAGE_AGENT_FIELDS, lambda: detect_damage(vehicle, vision)),
-        ("scam detector", SCAM_AGENT_FIELDS, lambda: detect_scam(vehicle)),
-    ]
-
-    agent_results = {}
-    for index, (agent_name, fields, run) in enumerate(steps):
-        print(f"  Running {agent_name}...")
-        result = run()
-        touch = index == len(steps) - 1
-        vehicle = save_agent_result(
-            vehicle_id, result, fields, touch_ai_last_updated=touch
-        )
-        agent_results[agent_name] = {k: vehicle[k] for k in fields if k in vehicle}
-        print(f"✅ {agent_name} finished for {vehicle_id}")
-
-    print(f"✅ enrich_car complete for {vehicle_id}")
-    return {
-        "message": "vehicle enriched",
-        "agent_results": agent_results,
-        "vehicle": vehicle,
-        "agent_result": {k: vehicle[k] for k in _ALL_AGENT_FIELDS if k in vehicle},
-    }
+    print(f"✅ enrich_car batch complete | {len(pending)} vehicle(s)")
+    return {"message": "enrichment complete"}

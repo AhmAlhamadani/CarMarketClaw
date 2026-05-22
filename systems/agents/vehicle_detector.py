@@ -74,7 +74,8 @@ def detect_vehicle(vehicle, vision):
     if plate_found:
         confidence = max(confidence, 0.98)
 
-    return {
-        "is_car_ai": final,
-        "is_car_ai_confidence": round(confidence, 3)
-    }
+    # Higher confidence = more likely a car listing (no separate boolean column).
+    if not final:
+        confidence = 1 - confidence
+
+    return {"is_car_ai_confidence": round(confidence, 3)}

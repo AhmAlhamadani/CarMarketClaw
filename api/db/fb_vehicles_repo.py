@@ -2,6 +2,7 @@ from datetime import datetime, UTC
 
 from fastapi import HTTPException
 
+from api.db.at_vehicles_repo import delete_by_fb_vehicle_id
 from api.db.supabase_client import supabase
 from api.db.fb_vehicles_schema import (
     normalize_scraper_row,
@@ -27,27 +28,29 @@ def list_pending_enrichment() -> list[dict]:
     return response.data or []
 
 
-def list_pending_completion() -> list[dict]:
+def list_pending_completion_ids() -> list[str]:
+    """Enriched (ai_last_updated set) but AutoTrader comparison not yet run."""
     response = (
         supabase.table("fb_vehicles")
-        .select("*")
+        .select("id")
         .eq("completed_comparisons", False)
+        .not_.is_("ai_last_updated", "null")
         .execute()
     )
-    return response.data or []
+    return [row["id"] for row in (response.data or []) if row.get("id")]
 
 
-def list_pending_analysis() -> list[dict]:
+def list_pending_analysis_ids() -> list[str]:
     """Enriched + AutoTrader done, but full analysis not yet run."""
     response = (
         supabase.table("fb_vehicles")
-        .select("*")
+        .select("id")
         .eq("analysed_complete", False)
         .eq("completed_comparisons", True)
         .not_.is_("ai_last_updated", "null")
         .execute()
     )
-    return response.data or []
+    return [row["id"] for row in (response.data or []) if row.get("id")]
 
 
 def require_ready_for_analysis(vehicle: dict) -> None:
@@ -100,6 +103,52 @@ def get_by_id(vehicle_id: str) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="Vehicle not found")
     return row
+
+
+def get_by_fb_id(fb_id: str) -> dict:
+    response = (
+        supabase.table("fb_vehicles")
+        .select("*")
+        .eq("fb_id", fb_id)
+        .execute()
+    )
+    row = _first_row(response)
+    if not row:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    return row
+
+
+def get_by_id_or_fb_id(ref: str) -> dict:
+    """Look up a vehicle by Supabase uuid (id) or Facebook listing id (fb_id)."""
+    try:
+        return get_by_id(ref)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+    return get_by_fb_id(ref)
+
+
+def delete_by_id_or_fb_id(ref: str) -> dict:
+    """Delete fb_vehicles row and related at_vehicles matches (uuid or fb_id)."""
+    vehicle = get_by_id_or_fb_id(ref)
+    vehicle_id = vehicle["id"]
+    at_matches_deleted = delete_by_fb_vehicle_id(vehicle_id)
+
+    supabase.table("fb_vehicles").delete().eq("id", vehicle_id).execute()
+
+    try:
+        get_by_id(vehicle_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return {
+                "vehicle_id": vehicle_id,
+                "fb_id": vehicle.get("fb_id"),
+                "title": vehicle.get("title"),
+                "at_matches_deleted": at_matches_deleted,
+            }
+        raise
+
+    raise HTTPException(status_code=500, detail="Vehicle delete failed")
 
 
 def save_scraped_vehicle(raw: dict) -> dict:

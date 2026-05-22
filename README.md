@@ -22,36 +22,37 @@ While the server is running, the Facebook scraper also runs automatically every 
     Database Check:
     http://127.0.0.1:8000/db_test
 
-
-
     Scrape Facebook Data (manual; also runs automatically at 11:00 and 19:00):
     http://127.0.0.1:8000/scrape/run
+
+
+
 
     Facebook vehicles pending AI enrichment:
     http://127.0.0.1:8000/fb_vehicles/pending_enrichment
 
-    Enrich car (plate → vehicle → damage → scam; only when ai_last_updated is null):
-    http://127.0.0.1:8000/agents/enrich_car/{vehicle_id}
+    Enrich all pending cars (plate → vehicle → damage → scam; returns enrichment complete):
+    http://127.0.0.1:8000/agents/enrich_car
 
 
 
-    Facebook vehicles pending AutoTrader (completed_comparisons is false):
+    Facebook vehicles pending AutoTrader (count + uuids only; enriched + completed_comparisons is false):
     http://127.0.0.1:8000/fb_vehicles/pending_completion
 
-    AutoTrader match (GET or POST — scrapes top 3 listings; sets completed_comparisons=true):
-    http://127.0.0.1:8000/autotrader/match/{fb_vehicle_id}
-    Params: make, model, trim, gearbox, min_mileage, max_mileage, min_year, max_year, use_suggestions (default true), force, save
+    Vehicle details for AutoTrader (make, model, transmission, mileage, year):
+    http://127.0.0.1:8000/fb_vehicles/{vehicle_id}/details
 
-    AutoTrader (WebSocket — interactive filter conversation, saves top 3 matches; sets completed_comparisons=true):
-    ws://127.0.0.1:8000/autotrader/ws/{fb_vehicle_id}
-
-    Saved AutoTrader matches:
-    http://127.0.0.1:8000/autotrader/matches/{fb_vehicle_id}
+    AutoTrader match (GET or POST — uuid or fb_id; scrapes top 3 listings; sets completed_comparisons=true):
+    http://127.0.0.1:8000/autotrader/match/{vehicle_id_or_fb_id}
+    Params: make, model, trim, gearbox, min_mileage, max_mileage, min_year, max_year
 
 
 
-    Facebook vehicles pending full analysis (enriched + completed_comparisons; analysed_complete is false):
+    Facebook vehicles pending full analysis (count + uuids only; enriched + completed_comparisons; analysed_complete is false):
     http://127.0.0.1:8000/fb_vehicles/pending_analysis
 
     Full analysis package (vehicle + matches; requires enrichment + completed_comparisons; sets analysed_complete=true):
     http://127.0.0.1:8000/fb_vehicles/{vehicle_id}/analysis
+
+    Delete a Facebook listing and its AutoTrader matches (uuid):
+    DELETE http://127.0.0.1:8000/fb_vehicles/{vehicle_id}

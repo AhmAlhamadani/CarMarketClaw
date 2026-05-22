@@ -24,7 +24,6 @@ SCRAPER_FIELDS = frozenset({
 })
 
 VEHICLE_AGENT_FIELDS = frozenset({
-    "is_car_ai",
     "is_car_ai_confidence",
 })
 
@@ -110,8 +109,6 @@ def normalize_scraper_row(data: dict) -> dict:
 def normalize_agent_row(data: dict, allowed: frozenset) -> dict:
     row = pick(data, allowed)
 
-    if "is_car_ai" in row:
-        row["is_car_ai"] = bool(row["is_car_ai"])
     if "damage_ai" in row:
         row["damage_ai"] = bool(row["damage_ai"])
 

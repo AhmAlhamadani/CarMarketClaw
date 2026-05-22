@@ -2,9 +2,10 @@ from fastapi import APIRouter
 
 from api.db.at_vehicles_repo import list_by_fb_vehicle_id
 from api.db.fb_vehicles_repo import (
+    delete_by_id_or_fb_id,
     get_by_id,
-    list_pending_analysis,
-    list_pending_completion,
+    list_pending_analysis_ids,
+    list_pending_completion_ids,
     list_pending_enrichment,
     mark_analysed_complete,
     require_ready_for_analysis,
@@ -29,16 +30,30 @@ def get_pending_enrichment():
 
 @router.get("/pending_completion")
 def get_pending_completion():
-    """All fb_vehicles rows where completed_comparisons is false (AutoTrader not run yet)."""
-    vehicles = list_pending_completion()
-    return {"count": len(vehicles), "vehicles": vehicles}
+    """Count and uuids of enriched vehicles (ai_last_updated set) awaiting AutoTrader."""
+    vehicle_ids = list_pending_completion_ids()
+    return {"count": len(vehicle_ids), "vehicle_ids": vehicle_ids}
 
 
 @router.get("/pending_analysis")
 def get_pending_analysis():
-    """Enriched + completed_comparisons, but analysed_complete is false (ready for /analysis)."""
-    vehicles = list_pending_analysis()
-    return {"count": len(vehicles), "vehicles": vehicles}
+    """Count and uuids of vehicles ready for full analysis."""
+    vehicle_ids = list_pending_analysis_ids()
+    return {"count": len(vehicle_ids), "vehicle_ids": vehicle_ids}
+
+
+@router.get("/{vehicle_id}/details")
+def get_vehicle_details(vehicle_id: str):
+    """Return make, model, transmission, mileage, and year for a vehicle by uuid."""
+    vehicle = get_by_id(vehicle_id)
+    return {
+        "vehicle_id": vehicle_id,
+        "make": vehicle.get("make"),
+        "model": vehicle.get("model"),
+        "transmission": vehicle.get("transmission"),
+        "mileage": vehicle.get("mileage"),
+        "year": vehicle.get("year"),
+    }
 
 
 @router.get("/{vehicle_id}/analysis")
@@ -67,3 +82,13 @@ def get_fb_vehicle(vehicle_id: str):
         "vehicle": vehicle,
         "autotrader_matches": list_by_fb_vehicle_id(vehicle_id),
     }
+
+
+@router.delete("/{vehicle_ref}")
+def delete_fb_vehicle(vehicle_ref: str):
+    """
+    Delete a Facebook listing and its AutoTrader matches.
+    Accepts Supabase uuid (id) or Facebook listing id (fb_id).
+    """
+    deleted = delete_by_id_or_fb_id(vehicle_ref)
+    return {"message": "vehicle deleted", **deleted}
