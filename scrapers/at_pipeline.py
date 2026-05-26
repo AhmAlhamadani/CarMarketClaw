@@ -58,7 +58,7 @@ def run_pipeline(
 
     status("Launching Chrome and opening AutoTrader (30–60 seconds)...")
 
-    with SB(uc=True, test=False) as sb:
+    with SB(uc=True, test=False, headed=False) as sb:
         sb.open(URL)
         sb.maximize_window()
         status("Browser ready. Opening filters — answer each question when it appears.")

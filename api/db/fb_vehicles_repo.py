@@ -1,4 +1,4 @@
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 
 from fastapi import HTTPException
 
@@ -126,6 +126,39 @@ def get_by_id_or_fb_id(ref: str) -> dict:
         if exc.status_code != 404:
             raise
     return get_by_fb_id(ref)
+
+
+def delete_older_than_days(days: int = 2) -> dict:
+    """
+    Delete fb_vehicles rows and their at_vehicles matches older than `days`
+    (by created_at). Returns counts for logging.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    response = (
+        supabase.table("fb_vehicles")
+        .select("id")
+        .lt("created_at", cutoff)
+        .execute()
+    )
+    ids = [row["id"] for row in (response.data or []) if row.get("id")]
+    if not ids:
+        return {"deleted_vehicles": 0, "deleted_at_matches": 0, "cutoff": cutoff}
+
+    at_response = (
+        supabase.table("at_vehicles")
+        .delete()
+        .in_("fb_vehicle_id", ids)
+        .execute()
+    )
+    at_count = len(at_response.data or [])
+
+    supabase.table("fb_vehicles").delete().in_("id", ids).execute()
+
+    return {
+        "deleted_vehicles": len(ids),
+        "deleted_at_matches": at_count,
+        "cutoff": cutoff,
+    }
 
 
 def delete_by_id_or_fb_id(ref: str) -> dict:

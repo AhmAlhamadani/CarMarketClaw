@@ -5,7 +5,9 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from api.db.fb_vehicles_repo import delete_older_than_days
 from api.services.scraper_job import execute_fb_scrape
+from scrapers.fb_scraper import STALE_LISTING_DAYS, prune_seen_listings
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,20 @@ def _schedule_timezone() -> ZoneInfo | None:
 
 
 def _run_scheduled_scrape() -> None:
+    try:
+        cleanup = delete_older_than_days(STALE_LISTING_DAYS)
+        seen_cleanup = prune_seen_listings(STALE_LISTING_DAYS)
+        logger.info(
+            "Stale listing cleanup (>%s days): deleted %s vehicle(s), %s AutoTrader match(es), "
+            "pruned %s seen listing(s) (%s remaining)",
+            STALE_LISTING_DAYS,
+            cleanup["deleted_vehicles"],
+            cleanup["deleted_at_matches"],
+            seen_cleanup["removed"],
+            seen_cleanup["remaining"],
+        )
+    except Exception:
+        logger.exception("Stale listing cleanup failed; continuing with scrape")
     execute_fb_scrape(interactive_login=False)
 
 

@@ -5,14 +5,15 @@ import re
 import requests
 import random
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from seleniumbase import SB
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_DIR = os.path.join(SCRIPT_DIR, "stealth_profile")
 SEEN_LISTINGS_FILE = os.path.join(SCRIPT_DIR, "seen_listings.json")
+STALE_LISTING_DAYS = 2
 
-MARKETPLACE_URL = "https://www.facebook.com/marketplace/glasgow/search?maxPrice=5000&daysSinceListed=2&minYear=2005&topLevelVehicleType=car_truck&query=Vehicles&category_id=546583916084032&exact=false&referral_ui_component=category_menu_item&locale=en_GB"
+MARKETPLACE_URL = "https://www.facebook.com/marketplace/glasgow/search?maxPrice=5000&daysSinceListed=2&maxMileage=100000&minYear=2005&topLevelVehicleType=car_truck&query=Vehicles&category_id=546583916084032&exact=false&referral_ui_component=category_menu_item&locale=en_GB"
 API_ENDPOINT = "http://localhost:8000/fb_vehicles/"
 
 
@@ -42,6 +43,34 @@ def mark_as_seen(seen_dict, fb_id):
     seen_dict[fb_id] = datetime.now().isoformat()
     with open(SEEN_LISTINGS_FILE, "w") as f:
         json.dump(seen_dict, f, indent=4)
+
+
+def prune_seen_listings(max_age_days: int = STALE_LISTING_DAYS) -> dict:
+    """Drop seen-listing entries older than max_age_days (by stored ISO timestamp)."""
+    seen = load_seen_listings()
+    if not seen:
+        return {"removed": 0, "remaining": 0}
+
+    cutoff = datetime.now() - timedelta(days=max_age_days)
+    kept = {}
+    removed = 0
+
+    for fb_id, ts in seen.items():
+        try:
+            seen_at = datetime.fromisoformat(ts)
+        except (TypeError, ValueError):
+            kept[fb_id] = ts
+            continue
+        if seen_at >= cutoff:
+            kept[fb_id] = ts
+        else:
+            removed += 1
+
+    if removed:
+        with open(SEEN_LISTINGS_FILE, "w") as f:
+            json.dump(kept, f, indent=4)
+
+    return {"removed": removed, "remaining": len(kept)}
 
 
 def extract_id_from_url(url):
@@ -479,6 +508,7 @@ def run(interactive_login: bool | None = None) -> dict:
 
     print(f"Loading profile: {PROFILE_DIR}")
 
+    prune_seen_listings()
     seen_listings = load_seen_listings()
     print(f"📂 Loaded {len(seen_listings)} previously scraped listings.")
 
